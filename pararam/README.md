@@ -102,6 +102,15 @@ curl -X POST http://127.0.0.1:8765/_mock/incoming -d "{\"chat_id\": 10, \"user_i
 `PARARAM_API_URL` and `PARARAM_FILE_URL` also let you point the client at a
 self-hosted pararam.io installation.
 
+### Tests
+
+* `pararam/tests/run.sh`: unit tests of the JSON models and the text
+  formatting conversion (needs only Qt).
+* `pararam/tests/run_backend_test.sh <cmake build dir>`: integration test
+  that drives `Pararam::Backend` with requests serialized by the generated
+  TL classes and parses the responses back, against the mock server (Linux,
+  needs a configured CMake build of the project).
+
 ## How it works
 
 * `mtproto/session.cpp`: the MTProto session never opens a socket and hands

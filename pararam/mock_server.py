@@ -29,6 +29,8 @@ import re
 import secrets
 import threading
 import uuid
+import struct
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -141,6 +143,20 @@ def parse_text(text):
     return result
 
 
+def make_png(width, height):
+    def chunk(kind, data):
+        body = kind + data
+        return (struct.pack('>I', len(data)) + body
+                + struct.pack('>I', zlib.crc32(body) & 0xffffffff))
+    rows = b''.join(b'\x00' + bytes([200, 80, 40]) * width
+                    for _ in range(height))
+    return (b'\x89PNG\r\n\x1a\n'
+            + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height,
+                                         8, 2, 0, 0, 0))
+            + chunk(b'IDAT', zlib.compress(rows))
+            + chunk(b'IEND', b''))
+
+
 def seed():
     add_chat(10, 'General', [1, 2, 3, 4])
     add_chat(11, 'Releases', [1, 3, 4], read_only=True, author=3)
@@ -167,6 +183,12 @@ def seed():
         'mime_type': 'text/plain'}, minutes_ago=10)
     add_post(11, 4, 'Release 1.0 deployed', minutes_ago=60)
     add_post(11, 3, 'Release 1.1 deployed', minutes_ago=30)
+    png = make_png(40, 30)
+    FILES['guid-screen'] = {'name': 'screen.png', 'mime_type': 'image/png',
+                            'data': png}
+    add_post(11, 3, 'Screenshot of the release', file={
+        'guid': 'guid-screen', 'name': 'screen.png', 'size': len(png),
+        'mime_type': 'image/png'}, minutes_ago=20)
     add_post(20, 3, 'Hey Alice, how are you?', minutes_ago=50)
     add_post(20, 1, 'Fine, thanks!', minutes_ago=45)
     add_post(20, 3, 'Great, see you tomorrow', minutes_ago=5)

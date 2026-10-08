@@ -433,6 +433,30 @@ int main(int argc, char *argv[]) {
 			}
 		}
 	}
+	// Images are shown as photos, their size is read from the file.
+	if (const auto page = history(Channel(11), 0, 0, 1, "messages.getHistory (photo)")) {
+		const auto list = MessagesOf(*page);
+		CHECK(list.size() == 1);
+		if (!list.isEmpty() && list[0].type() == mtpc_message) {
+			const auto media = list[0].c_message().vmedia();
+			CHECK(media && media->type() == mtpc_messageMediaPhoto);
+			if (media && media->type() == mtpc_messageMediaPhoto) {
+				const auto &photo = media->c_messageMediaPhoto().vphoto()->c_photo();
+				const auto &size = photo.vsizes().v[0].c_photoSize();
+				CHECK(size.vw().v == 40 && size.vh().v == 30);
+				const auto file = Call<MTPupload_File>(MTPupload_GetFile(
+					MTP_flags(0),
+					MTP_inputPhotoFileLocation(
+						photo.vid(),
+						photo.vaccess_hash(),
+						photo.vfile_reference(),
+						MTP_string("y")),
+					MTP_long(0),
+					MTP_int(512 * 1024)), "upload.getFile (photo)");
+				CHECK(file && file->c_upload_file().vbytes().v.startsWith("\x89PNG"));
+			}
+		}
+	}
 	if (documentId) {
 		const auto file = Call<MTPupload_File>(MTPupload_GetFile(
 			MTP_flags(0),
