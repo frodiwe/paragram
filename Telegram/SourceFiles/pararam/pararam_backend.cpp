@@ -1565,7 +1565,9 @@ MTPMessageMedia Backend::mediaToMTP(const FileInfo &original) {
 					MTP_string("y"),
 					MTP_int(file.width),
 					MTP_int(file.height),
-					MTP_int(int(std::min(file.size, int64(INT_MAX)))))),
+					MTP_int(int(std::min(
+						file.size,
+						int64(std::numeric_limits<int>::max())))))),
 				MTPVector<MTPVideoSize>(),
 				MTP_int(kDcId)),
 			MTPint(),
