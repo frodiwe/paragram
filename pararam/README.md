@@ -29,10 +29,13 @@ in-process by a translation layer that calls the pararam.io REST API.
 | Private chats                      | Private chats with the user               |
 | Group chats                        | Groups (read-only chats: posting blocked for non-admins) |
 | Favorite chats                     | Pinned chats (pin / unpin syncs back)     |
-| Hidden chats                       | Archived chats                            |
+| Hidden chats                       | Archived chats (archive / unarchive syncs back) |
+| Chat tags                          | Chat folders (editing folders edits tags) |
+| Pinned posts                       | Pinned messages bar                       |
 | Posts, replies                     | Messages, replies                         |
 | `**bold**`, `` `code` ``, ```` ``` ````, `~~strike~~`, links, mentions | Formatted text |
 | Files                              | Documents (download, open, save)          |
+| Images                             | Inline photos                             |
 | Read marks                         | Read / unread state and counters          |
 | New posts, edits and deletions     | Live updates (polled every few seconds)   |
 | Members                            | Group members list                        |
@@ -50,7 +53,13 @@ calls, polls, payments, ...) are disabled or answer with empty data.
 
 Every push builds `Pararam.exe` on GitHub Actions
 (`.github/workflows/pararam-windows.yml`). Download the
-**Pararam Desktop x64** artifact from the latest successful run. The
+**Pararam Desktop x64** artifact from the latest successful run.
+
+The first runs on a new repository build all dependencies (Qt, FFmpeg,
+WebRTC, ...) from source, which can take longer than one GitHub Actions job
+may run. Progress is cached, so just re-run the workflow until it produces
+the artifact; after that each build only compiles the app. Public
+repositories get faster (4-core) runners for free. The
 executable is portable and keeps its data in
 `%APPDATA%\Pararam Desktop`, separate from a Telegram Desktop install.
 
@@ -120,8 +129,10 @@ The pararam.io endpoints are the ones used by the official Python client
 
 ## Known limitations
 
-* Images are shown as files (pararam.io does not report image sizes, which
-  inline photos need). Opening them shows the image.
+* pararam.io does not report image sizes, which inline photos need, so the
+  client reads them from the first 64 KB of each image. Images whose size
+  cannot be read this way are shown as files.
+* Muting a chat is stored locally (per account), not on pararam.io.
 * No avatars yet.
 * Outgoing messages show a single check mark: pararam.io does not report
   per-chat read receipts.
