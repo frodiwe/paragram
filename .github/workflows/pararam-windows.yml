@@ -24,22 +24,24 @@ jobs:
         shell: cmd
 
     steps:
-      - name: Prepare directories.
-        run: |
-          mkdir %userprofile%\TBuild\Libraries
-          mklink /d %GITHUB_WORKSPACE%\TBuild %userprofile%\TBuild
-          echo TBUILD=%GITHUB_WORKSPACE%\TBuild>>%GITHUB_ENV%
-          echo LibrariesPath=%GITHUB_WORKSPACE%\TBuild\Libraries\win64>>%GITHUB_ENV%
-
-      - name: Get repository name.
-        shell: bash
-        run: echo "REPO_NAME=${GITHUB_REPOSITORY##*/}" >> $GITHUB_ENV
-
+      # Checked out into the workspace (private repositories get their
+      # credentials only there), then copied to C:, which has the disk
+      # space the dependencies need, like the upstream Telegram workflow.
       - name: Clone.
         uses: actions/checkout@v7
         with:
           submodules: recursive
-          path: ${{ env.TBUILD }}\${{ env.REPO_NAME }}
+
+      - name: Prepare directories.
+        run: |
+          for %%I in ("%GITHUB_WORKSPACE%") do set REPO_NAME=%%~nxI
+          echo REPO_NAME=%REPO_NAME%>>%GITHUB_ENV%
+          mkdir %userprofile%\TBuild\Libraries
+          robocopy "%GITHUB_WORKSPACE%" "%userprofile%\TBuild\%REPO_NAME%" /E /NFL /NDL /NJH /NJS /NP > nul
+          if %errorlevel% geq 8 exit /b 1
+          echo TBUILD=%userprofile%\TBuild>>%GITHUB_ENV%
+          echo LibrariesPath=%userprofile%\TBuild\Libraries\win64>>%GITHUB_ENV%
+          exit /b 0
 
       - name: First set up.
         shell: bash
