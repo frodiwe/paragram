@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/mtp_instance.h"
 #include "mtproto/mtproto_response.h"
 #include "mtproto/details/mtproto_dump_to_text.h"
+#include "scheme-dump_to_text.h"
 #include "base/unixtime.h"
 #include "logs.h"
 
@@ -71,12 +72,18 @@ base::flat_map<const MTP::Instance*, Backend*> &Registry() {
 		u"yyyy-MM-ddTHH:mm:ss.zzz000Z"_q);
 }
 
+// Responses must be boxed (start with the constructor id), while the
+// generated MTP_*() functions return bare values.
 template <typename Type>
 [[nodiscard]] mtpBuffer Serialize(const Type &value) {
-	auto result = mtpBuffer();
-	result.reserve(tl::count_length(value) >> 2);
-	value.write(result);
-	return result;
+	if constexpr (tl::is_boxed_v<Type>) {
+		auto result = mtpBuffer();
+		result.reserve(tl::count_length(value) >> 2);
+		value.write(result);
+		return result;
+	} else {
+		return Serialize(tl::boxed<Type>(value));
+	}
 }
 
 [[nodiscard]] QString JoinIds(const std::vector<int64> &ids) {
@@ -868,11 +875,14 @@ void Backend::dispatch(
 	}
 
 	auto from = body.constData();
-	const auto dump = MTP::details::DumpToText(
+	auto dump = MTP::details::DumpToTextBuffer();
+	[[maybe_unused]] const auto parsed = MTP::details::DumpToTextType(
+		dump,
 		from,
 		body.constData() + body.size());
+	const auto text = QString::fromUtf8(dump.p, dump.size);
 	LOG(("Pararam: unsupported request %1"
-		).arg(dump.left(dump.indexOf('\n')).left(200)));
+		).arg(text.left(text.indexOf('\n')).left(200)));
 	replyError(requestId, 400, u"PARARAM_NOT_SUPPORTED"_q);
 }
 
