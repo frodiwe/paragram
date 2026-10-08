@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_keys.h"
 #include "intro/intro_qr.h"
 #include "intro/intro_phone.h"
+#include "intro/intro_pararam.h"
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/labels.h"
 #include "main/main_account.h"
@@ -24,14 +25,14 @@ StartWidget::StartWidget(
 	not_null<Data*> data)
 : Step(parent, account, data, true) {
 	setMouseTracking(true);
-	setTitleText(rpl::single(u"Telegram Desktop"_q));
-	setDescriptionText(tr::lng_intro_about());
+	setTitleText(rpl::single(u"Pararam Desktop"_q));
+	setDescriptionText(rpl::single(
+		u"A native desktop client for pararam.io."_q));
 	show();
 }
 
 void StartWidget::submit() {
-	account().destroyStaleAuthorizationKeys();
-	goNext<QrWidget>();
+	goNext<PararamLoginWidget>();
 }
 
 rpl::producer<QString> StartWidget::nextButtonText() const {

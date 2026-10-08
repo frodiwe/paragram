@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/config_loader.h"
 
+#include "pararam/pararam_backend.h"
+
 #include "base/random.h"
 #include "mtproto/special_config_request.h"
 #include "mtproto/facade.h"
@@ -136,6 +138,11 @@ void ConfigLoader::setPhone(const QString &phone) {
 }
 
 void ConfigLoader::createSpecialLoader() {
+	if (Pararam::Backend::For(_instance)) {
+		// Pararam Desktop: never resolve Telegram configs via DNS-over-HTTPS.
+		_specialLoader.reset();
+		return;
+	}
 	const auto testMode = _instance->isTestMode();
 	_triedSpecialEndpoints.clear();
 	_specialLoader = std::make_unique<SpecialConfigRequest>([=](

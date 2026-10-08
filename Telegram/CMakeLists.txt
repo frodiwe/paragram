@@ -1402,6 +1402,8 @@ PRIVATE
     intro/intro_code.h
     intro/intro_email.cpp
     intro/intro_email.h
+    intro/intro_pararam.cpp
+    intro/intro_pararam.h
     intro/intro_password_check.cpp
     intro/intro_password_check.h
     intro/intro_phone.cpp
@@ -1655,6 +1657,13 @@ PRIVATE
     poll/poll_link_thumbnail.h
     poll/poll_media_upload.cpp
     poll/poll_media_upload.h
+    pararam/pararam_api.cpp
+    pararam/pararam_api.h
+    pararam/pararam_backend.cpp
+    pararam/pararam_backend.h
+    pararam/pararam_data.cpp
+    pararam/pararam_data.h
+    pararam/pararam_tl_reader.h
     passport/passport_encryption.cpp
     passport/passport_encryption.h
     passport/passport_form_controller.cpp

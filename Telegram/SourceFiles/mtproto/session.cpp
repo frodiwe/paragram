@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/session.h"
 
+#include "pararam/pararam_backend.h"
+
 #include "mtproto/details/mtproto_dcenter.h"
 #include "mtproto/session_private.h"
 #include "mtproto/mtproto_auth_key.h"
@@ -216,6 +218,11 @@ void Session::watchDcOptionsChanges() {
 
 void Session::start() {
 	killConnection();
+	if (Pararam::Backend::For(_instance)) {
+		// Pararam Desktop: no MTProto connections are ever made,
+		// all requests are served by the pararam.io backend.
+		return;
+	}
 	_private = new SessionPrivate(
 		_instance,
 		_thread.get(),
@@ -326,6 +333,10 @@ void Session::needToResumeAndSend() {
 		DEBUG_LOG(("Session Info: can't resume a killed session"));
 		return;
 	}
+	if (Pararam::Backend::For(_instance)) {
+		_ping = false;
+		return;
+	}
 	if (!_private) {
 		DEBUG_LOG(("Session Info: resuming session dcWithShift %1").arg(_shiftedDcId));
 		start();
@@ -350,6 +361,11 @@ void Session::resetDone() {
 }
 
 void Session::cancel(mtpRequestId requestId, mtpMsgId msgId) {
+	if (const auto backend = Pararam::Backend::For(_instance)) {
+		if (requestId) {
+			backend->cancelRequest(requestId);
+		}
+	}
 	if (requestId) {
 		QWriteLocker locker(_data->toSendMutex());
 		_data->toSendMap().remove(requestId);
@@ -396,6 +412,9 @@ int32 Session::requestState(mtpRequestId requestId) const {
 }
 
 int32 Session::getState() const {
+	if (Pararam::Backend::For(_instance)) {
+		return ConnectedState;
+	}
 	int32 result = -86400000;
 
 	if (_private) {
@@ -417,12 +436,43 @@ int32 Session::getState() const {
 }
 
 QString Session::transport() const {
+	if (Pararam::Backend::For(_instance)) {
+		return u"pararam.io"_q;
+	}
 	return _private ? _private->transport() : QString();
 }
 
 void Session::sendPrepared(
 		const SerializedRequest &request,
 		crl::time msCanWait) {
+	if (const auto backend = Pararam::Backend::For(_instance)) {
+		if (_killed) {
+			return;
+		}
+		// Extract the request body (without the MTProto message header)
+		// and pass it to the pararam.io backend on the main thread.
+		const auto requestId = request->requestId;
+		const auto bodyBytes = uint32((*request)[
+			SerializedRequest::kMessageLengthPosition]);
+		const auto from = request->constData()
+			+ SerializedRequest::kMessageBodyPosition;
+		const auto available = uint32(request->size())
+			- SerializedRequest::kMessageBodyPosition;
+		const auto primes = std::min(bodyBytes / 4, available);
+		auto body = mtpBuffer(from, from + primes);
+		const auto afterRequestId = request->after
+			? request->after->requestId
+			: mtpRequestId(0);
+		InvokeQueued(this, [=, body = std::move(body)]() mutable {
+			if (const auto backend = Pararam::Backend::For(_instance)) {
+				backend->handleRequest(
+					requestId,
+					std::move(body),
+					afterRequestId);
+			}
+		});
+		return;
+	}
 	DEBUG_LOG(("MTP Info: adding request to toSendMap, msCanWait %1"
 		).arg(msCanWait));
 	{

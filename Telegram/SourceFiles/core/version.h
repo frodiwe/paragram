@@ -18,10 +18,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #endif // TDESKTOP_ALLOW_CLOSED_ALPHA
 
 // used in Updater.cpp and Setup.iss for Windows
-constexpr auto AppId = "{53F49750-6209-4FBF-9CA8-7A333C87D1ED}"_cs;
-constexpr auto AppNameOld = "Telegram Win (Unofficial)"_cs;
-constexpr auto AppName = "Telegram Desktop"_cs;
-constexpr auto AppFile = "Telegram"_cs;
+// Pararam Desktop uses its own id, name and data folder so that it never
+// touches the data of an installed Telegram Desktop.
+constexpr auto AppId = "{8C1A1B6E-3F2D-4C3B-9A51-2E7D4B5F6A10}"_cs;
+constexpr auto AppNameOld = "Pararam Win (Unofficial)"_cs;
+constexpr auto AppName = "Pararam Desktop"_cs;
+constexpr auto AppFile = "Pararam"_cs;
 constexpr auto AppVersion = 7002010;
 constexpr auto AppVersionStr = "7.2.10";
 constexpr auto AppBetaVersion = true;

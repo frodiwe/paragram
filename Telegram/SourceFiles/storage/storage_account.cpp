@@ -277,6 +277,9 @@ base::flat_set<QString> Account::collectGoodNames() const {
 		"map1",
 		"maps",
 		"configs",
+		"pararam0",
+		"pararam1",
+		"pararams",
 	};
 	const auto push = [&](FileKey key) {
 		if (!key) {
@@ -3000,6 +3003,37 @@ void Account::writeExportSettings(const Export::Settings &settings) {
 
 	FileWriteDescriptor file(_exportSettingsKey, _basePath);
 	file.writeEncrypted(data, _localKey);
+}
+
+void Account::writePararamSession(const QByteArray &data) {
+	if (!_localKey) {
+		return;
+	}
+	if (data.isEmpty()) {
+		QFile::remove(_basePath + u"pararam0"_q);
+		QFile::remove(_basePath + u"pararam1"_q);
+		QFile::remove(_basePath + u"pararams"_q);
+		return;
+	}
+	EncryptedDescriptor encrypted(Serialize::bytearraySize(data));
+	encrypted.stream << data;
+	FileWriteDescriptor file(u"pararam"_q, _basePath);
+	file.writeEncrypted(encrypted, _localKey);
+}
+
+QByteArray Account::readPararamSession() {
+	if (!_localKey) {
+		return QByteArray();
+	}
+	FileReadDescriptor file;
+	if (!ReadEncryptedFile(file, u"pararam"_q, _basePath, _localKey)) {
+		return QByteArray();
+	}
+	auto result = QByteArray();
+	file.stream >> result;
+	return (file.stream.status() == QDataStream::Ok)
+		? result
+		: QByteArray();
 }
 
 Export::Settings Account::readExportSettings() {

@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/mtp_instance.h"
 
+#include "pararam/pararam_backend.h"
+
 #include "mtproto/details/mtproto_dcenter.h"
 #include "mtproto/details/mtproto_rsa_public_key.h"
 #include "mtproto/special_config_request.h"
@@ -294,6 +296,9 @@ private:
 
 	Core::SettingsProxy &_proxySettings;
 
+	// Pararam Desktop: serves all requests instead of Telegram servers.
+	std::unique_ptr<Pararam::Backend> _pararam;
+
 	rpl::lifetime _lifetime;
 
 };
@@ -315,7 +320,8 @@ Instance::Private::Private(
 , _mode(mode)
 , _config(std::move(fields.config))
 , _networkReachability(base::NetworkReachability::Instance())
-, _proxySettings(Core::App().settings().proxy()) {
+, _proxySettings(Core::App().settings().proxy())
+, _pararam(std::make_unique<Pararam::Backend>(instance)) {
 	Expects(_config != nullptr);
 
 	const auto idealThreadPoolSize = QThread::idealThreadCount();

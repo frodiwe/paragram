@@ -151,6 +151,10 @@ public:
 	void writeExportSettings(const Export::Settings &settings);
 	[[nodiscard]] Export::Settings readExportSettings();
 
+	// Pararam Desktop: encrypted pararam.io session (cookies, ids).
+	void writePararamSession(const QByteArray &data);
+	[[nodiscard]] QByteArray readPararamSession();
+
 	void setMediaLastPlaybackPosition(DocumentId id, crl::time time);
 	[[nodiscard]] crl::time mediaLastPlaybackPosition(DocumentId id) const;
 

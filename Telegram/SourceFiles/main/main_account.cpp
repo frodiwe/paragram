@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "main/main_account.h"
 
+#include "pararam/pararam_backend.h"
+
 #include "base/platform/base_platform_info.h"
 #include "core/application.h"
 #include "storage/storage_account.h"
@@ -461,6 +463,25 @@ void Account::startMtp(std::unique_ptr<MTP::Config> config) {
 	}, _lifetime);
 
 	_mtpFields.mainDcId = _mtp->mainDcId();
+
+	if (const auto backend = Pararam::Backend::For(_mtp.get())) {
+		// Pararam Desktop: restore and persist the pararam.io session.
+		backend->restore(local().readPararamSession());
+		const auto instance = _mtp.get();
+		const auto writing = _mtp->lifetime().make_state<bool>(false);
+		backend->setSessionChangedCallback([=] {
+			if (*writing) {
+				return;
+			}
+			*writing = true;
+			Ui::PostponeCall(instance, [=] {
+				*writing = false;
+				if (const auto backend = Pararam::Backend::For(instance)) {
+					local().writePararamSession(backend->serialize());
+				}
+			});
+		});
+	}
 
 	_mtp->setUpdatesHandler([=](const MTP::Response &message) {
 		checkForUpdates(message) || checkForNewSession(message);
