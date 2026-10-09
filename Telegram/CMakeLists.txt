@@ -2507,7 +2507,10 @@ if (MSVC)
         /DELAYLOAD:userenv.dll
         /DELAYLOAD:wtsapi32.dll
         /DELAYLOAD:propsys.dll
+        /DELAYLOAD:dnsapi.dll
     )
+    # Qt Network's DNS lookup, pulled in by the pararam.io sockets.
+    target_link_libraries(Telegram PRIVATE Dnsapi)
     if (QT_VERSION GREATER 6)
         if (NOT build_winarm)
             target_link_options(Telegram PRIVATE
