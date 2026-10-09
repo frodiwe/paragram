@@ -41,13 +41,17 @@ in-process by a translation layer that calls the pararam.io REST API.
 | Members                            | Group members list                        |
 | Users / chats search               | Global search                             |
 | Posts search                       | Search in a chat and global message search|
+| Calls in private chats             | Voice and video calls (ringing, accept, decline, mute, camera, screen sharing) |
+| Calls in group chats               | Video chats (participants, mute, camera tiles) |
+| Call posts                         | Call history in chats and in the Calls list |
 
 You can also: send, reply, edit and delete messages; send files and photos
 (uploaded to pararam.io); forward messages (sent as copies); start a new
 private chat from search; join and leave group chats; log out.
 
 Features Telegram has and pararam.io does not (stickers, reactions, stories,
-calls, polls, payments, ...) are disabled or answer with empty data.
+polls, payments, scheduled video chats, ...) are disabled or answer with
+empty data.
 
 ## Download
 
@@ -102,6 +106,29 @@ curl -X POST http://127.0.0.1:8765/_mock/incoming -d "{\"chat_id\": 10, \"user_i
 `PARARAM_API_URL` and `PARARAM_FILE_URL` also let you point the client at a
 self-hosted pararam.io installation.
 
+### Calls with the mock server
+
+With `pip install aiohttp aiortc numpy` the mock also runs a media server
+(port 8766): calls get answered by simulated users that send a test tone and
+a moving test picture. Start the client with:
+
+```
+set PARARAM_SOCK_URL=ws://127.0.0.1:8766
+set PARARAM_MEDIA_INSECURE=1
+set PARARAM_CALL_ALLOW_DIRECT=1
+set PARARAM_CALL_ANY_CODEC=1
+```
+
+(the mock has no TLS, no TURN server and no VP9). Outgoing private calls are
+answered by the other user after 2 seconds. Helpers:
+
+```
+curl -X POST http://127.0.0.1:8765/_mock/call_incoming -d "{\"chat_id\": 20, \"user_id\": 3, \"video\": true}"
+curl -X POST http://127.0.0.1:8765/_mock/call_join -d "{\"chat_id\": 10, \"user_id\": 2, \"video\": true}"
+curl -X POST http://127.0.0.1:8765/_mock/call_leave -d "{\"chat_id\": 20, \"user_id\": 3}"
+curl -X POST http://127.0.0.1:8765/_mock/call_state -d "{}"
+```
+
 ### Tests
 
 * `pararam/tests/run.sh`: unit tests of the JSON models and the text
@@ -132,6 +159,20 @@ self-hosted pararam.io installation.
   stored encrypted with the local key, like Telegram Desktop's own
   authorization data, so a local passcode protects it too.
 * `intro/intro_pararam.cpp`: the pararam.io sign-in screen.
+* Calls (`pararam/pararam_calls.cpp`, `pararam/calls/`): pararam.io calls go
+  through its media server, which mixes the audio of a room and forwards the
+  video of every participant. The backend answers the `phone.*` requests of
+  the Telegram call UI (it plays the other side of the Telegram call key
+  exchange, which is not used) and joins the room of the chat:
+  `POST /core/call`, then the media server socket and HTTP API.
+  `pararam/calls/pararam_media_engine.cpp` does the WebRTC part with the
+  libwebrtc built into Telegram Desktop: one connection to the media server
+  that sends our audio and video and plays the mix, and one receive-only
+  connection per participant for their video. It is plugged into the call
+  UI as a tgcalls implementation (`pararam_call_instance.cpp` for private
+  calls, `pararam_group_instance.cpp` for video chats). Incoming calls are
+  noticed through the pararam.io main socket (`GET /core/call` as a
+  fallback).
 
 The pararam.io endpoints are the ones used by the official Python client
 [`pararamio`](https://gitlab.com/pararam-public/py-pararamio).
@@ -143,6 +184,10 @@ The pararam.io endpoints are the ones used by the official Python client
   cannot be read this way are shown as files.
 * Muting a chat is stored locally (per account), not on pararam.io.
 * No avatars yet.
+* Calls were built from the pararam.io web client and tested against a mock
+  media server only; the details of the real media server may need tuning.
+* Screen sharing in video chats (group calls) is not supported yet, in
+  private calls the screen replaces the camera like on pararam.io.
 * Outgoing messages show a single check mark: pararam.io does not report
   per-chat read receipts.
 * Forwarded messages are sent as copies with a "Forwarded from" line.

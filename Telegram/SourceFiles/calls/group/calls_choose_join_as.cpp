@@ -442,19 +442,8 @@ void ChooseJoinAsProcess::processList(
 			finish(info);
 			return;
 		}
-		const auto livestream = peer->isBroadcast();
+		// pararam.io has no scheduled calls, no "or schedule" link.
 		const auto creating = !peer->groupCall();
-		if (creating) {
-			confirmation
-				.append("\n\n")
-				.append(tr::lng_group_call_or_schedule(
-				tr::now,
-				lt_link,
-				tr::link((livestream
-					? tr::lng_group_call_schedule_channel
-					: tr::lng_group_call_schedule)(tr::now)),
-				tr::marked));
-		}
 		const auto guard = base::make_weak(&_request->guard);
 		const auto safeFinish = crl::guard(guard, [=] { finish(info); });
 		const auto filter = [=](const auto &...) {

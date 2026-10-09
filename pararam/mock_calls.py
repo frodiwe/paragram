@@ -43,6 +43,9 @@ PORT = 8766
 ROOMS = {}  # chat_id -> Room
 MAIN_SOCKETS = set()
 CONFIG = {'auto_answer': True, 'answer_video': True, 'answer_delay': 2.0}
+# Set by mock_server.py: called with (chat_id, starter_id, users) when a
+# private call ends, users being [{'id', 'join', 'leave'}].
+ON_CALL_FINISHED = None
 NAMES = {}
 
 
@@ -118,6 +121,16 @@ class Room:
         self.members = {}  # user_id -> Member
         self.virtual = {}  # user_id -> {'audio', 'video'}
         self.rejected = set()
+        self.history = {}  # user_id -> {'id', 'join', 'leave'}
+
+    def mark_join(self, user_id):
+        if user_id not in self.history:
+            self.history[user_id] = {'id': user_id, 'join': int(time.time())}
+
+    def mark_leave(self, user_id):
+        entry = self.history.get(user_id)
+        if entry is not None and 'leave' not in entry:
+            entry['leave'] = int(time.time())
 
     def user_ids(self):
         return list(self.members) + list(self.virtual)
@@ -225,6 +238,7 @@ def incoming(chat_id, user_id, pm, users, video=False):
             room = Room(chat_id, user_id, silent=not pm, pm=pm, users=users)
             ROOMS[chat_id] = room
         room.virtual[user_id] = {'audio': True, 'video': video}
+        room.mark_join(user_id)
     schedule(notify_main_sockets())
     return {'room_id': room.room_id, 'sess_id': room.sess_id}
 
@@ -235,6 +249,7 @@ def join(chat_id, user_id, video=True):
         if room is None:
             return None
         room.virtual[user_id] = {'audio': True, 'video': video}
+        room.mark_join(user_id)
     schedule(_announce_join(room, user_id))
     return {'ok': True}
 
@@ -250,6 +265,7 @@ def leave(chat_id, user_id):
         if room is None or user_id not in room.virtual:
             return None
         del room.virtual[user_id]
+        room.mark_leave(user_id)
     schedule(_user_left(room, user_id))
     return {'ok': True}
 
@@ -299,11 +315,17 @@ async def _user_left(room, user_id):
 
 async def _close_room(room):
     with LOCK:
-        if ROOMS.get(room.chat_id) is room:
-            del ROOMS[room.chat_id]
+        if ROOMS.get(room.chat_id) is not room:
+            return
+        del ROOMS[room.chat_id]
         members = list(room.members.values())
         room.members.clear()
         room.virtual.clear()
+        for user_id in list(room.history):
+            room.mark_leave(user_id)
+    if room.pm and ON_CALL_FINISHED is not None:
+        ON_CALL_FINISHED(room.chat_id, room.starter_id,
+                         list(room.history.values()))
     for member in members:
         for pc in member.pcs.values():
             await pc.close()
@@ -321,6 +343,7 @@ async def _auto_answer(room, starter_id):
         room.virtual[others[0]] = {'audio': True,
                                    'video': CONFIG['answer_video']}
         callee = others[0]
+        room.mark_join(callee)
     log('auto answer by', callee, 'in chat', room.chat_id)
     await _announce_join(room, callee)
 
@@ -342,6 +365,7 @@ async def media_socket(request):
     with LOCK:
         room.members[user_id] = member
         room.virtual.pop(user_id, None)
+        room.mark_join(user_id)
     log('user', user_id, 'joined room', room.room_id)
     await send(ws, {'type': 'approve', 'call_uid': secrets.token_hex(4),
                     'http_session_auth_key': member.auth, 'invited': False})
@@ -379,6 +403,7 @@ async def media_socket(request):
         with LOCK:
             if room.members.get(user_id) is member:
                 del room.members[user_id]
+            room.mark_leave(user_id)
         for pc in member.pcs.values():
             await pc.close()
         log('user', user_id, 'left room', room.room_id,

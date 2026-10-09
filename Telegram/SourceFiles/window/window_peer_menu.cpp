@@ -4362,9 +4362,6 @@ bool FillVideoChatMenu(
 	const auto callback = [=](Calls::StartGroupCallArgs &&args) {
 		controller->startOrJoinGroupCall(peer, std::move(args));
 	};
-	const auto rtmpCallback = [=] {
-		Core::App().calls().showStartWithRtmp(controller->uiShow(), peer);
-	};
 	const auto livestream = !peer->isMegagroup() && peer->isChannel();
 	const auto has = (peer->groupCall() != nullptr);
 	const auto manager = peer->canManageGroupCall();
@@ -4380,20 +4377,6 @@ bool FillVideoChatMenu(
 				: tr::lng_menu_start_group_call)(tr::now),
 			[=] { callback({}); },
 			&st::menuIconStartStream);
-	}
-	if (!has && manager) {
-		addAction(
-			(livestream
-				? tr::lng_menu_start_group_call_scheduled_channel
-				: tr::lng_menu_start_group_call_scheduled)(tr::now),
-			[=] { callback({ .scheduleNeeded = true }); },
-			&st::menuIconReschedule);
-		addAction(
-			(livestream
-				? tr::lng_menu_start_group_call_with_channel
-				: tr::lng_menu_start_group_call_with)(tr::now),
-			rtmpCallback,
-			&st::menuIconStartStreamWith);
 	}
 	return has || manager;
 }

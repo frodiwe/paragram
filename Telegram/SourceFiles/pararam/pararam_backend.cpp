@@ -266,6 +266,41 @@ template <typename Type>
 	return type.toLower().replace('_', ' ');
 }
 
+// pararam.io writes a CALL event post into a chat for every call:
+// {users: [{id, join, leave}], silent, is_open}.
+[[nodiscard]] bool IsCallEvent(const PostInfo &post) {
+	return (post.eventType == u"CALL"_q);
+}
+
+[[nodiscard]] MTPMessageAction PhoneCallAction(const PostInfo &post) {
+	using Flag = MTPDmessageActionPhoneCall::Flag;
+	const auto users = post.eventData.value(u"users"_q).toArray();
+	auto joined = 0;
+	auto start = TimeId(0);
+	auto finish = TimeId(0);
+	for (const auto &value : users) {
+		const auto user = value.toObject();
+		const auto join = TimeId(JsonInt(user, u"join"_q));
+		const auto leave = TimeId(JsonInt(user, u"leave"_q));
+		if (join) {
+			++joined;
+			start = start ? std::min(start, join) : join;
+		}
+		finish = std::max(finish, leave);
+	}
+	const auto open = JsonBool(post.eventData, u"is_open"_q);
+	const auto missed = !open && (joined < 2);
+	const auto duration = (!open && joined >= 2 && finish > start)
+		? int(finish - start)
+		: 0;
+	return MTP_messageActionPhoneCall(
+		MTP_flags((missed ? Flag::f_reason : Flag())
+			| (duration ? Flag::f_duration : Flag())),
+		MTP_long((uint64(post.chatId) << 24) ^ uint64(post.postNo)),
+		MTP_phoneCallDiscardReasonMissed(),
+		MTP_int(duration));
+}
+
 [[nodiscard]] HttpError LocalError(const QString &type) {
 	auto result = HttpError();
 	result.status = 400;
@@ -1636,7 +1671,10 @@ MTPMessage Backend::messageToMTP(const Chat &chat, const PostInfo &post) {
 			MTPPeer(),
 			MTPMessageReplyHeader(),
 			date,
-			MTP_messageActionCustomAction(MTP_string(DescribeEvent(post))),
+			((chat.info.pm && IsCallEvent(post))
+				? PhoneCallAction(post)
+				: MTP_messageActionCustomAction(
+					MTP_string(DescribeEvent(post)))),
 			MTPMessageReactions(),
 			MTPint());
 	}
@@ -4634,6 +4672,50 @@ void Backend::messagesSearch(
 			}
 		}
 		finish();
+		return;
+	}
+	if (reader.ok()
+		&& !chat
+		&& filter.type() == mtpc_inputMessagesFilterPhoneCalls) {
+		// The calls list: CALL events of the private chats we know.
+		if (offset) {
+			empty();
+			return;
+		}
+		struct Found {
+			Chat *chat = nullptr;
+			const PostInfo *post = nullptr;
+		};
+		auto found = std::vector<Found>();
+		for (const auto &[id, chat] : _chats) {
+			if (!chat->info.pm) {
+				continue;
+			}
+			for (const auto &[number, post] : chat->posts) {
+				if (IsCallEvent(post) && !post.deleted) {
+					found.push_back({ chat.get(), &post });
+				}
+			}
+		}
+		ranges::sort(found, std::greater<>(), [](const Found &entry) {
+			return entry.post->created;
+		});
+		if (found.size() > kSearchLimit) {
+			found.resize(kSearchLimit);
+		}
+		auto messages = QVector<MTPMessage>();
+		auto users = std::vector<int64>{ _selfId };
+		for (const auto &entry : found) {
+			collectPeers(*entry.chat, *entry.post, users);
+			messages.push_back(messageToMTP(*entry.chat, *entry.post));
+		}
+		ensureUsers(users, [=] {
+			reply(requestId, MTP_messages_messages(
+				MTP_vector<MTPMessage>(messages),
+				MTP_vector<MTPForumTopic>(),
+				MTP_vector<MTPChat>(),
+				usersToMTP(users)));
+		});
 		return;
 	}
 	if (!reader.ok()

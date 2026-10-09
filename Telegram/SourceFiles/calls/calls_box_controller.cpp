@@ -790,41 +790,6 @@ void ClearCallsBox(
 	box->addButton(tr::lng_cancel(), [=] { box->closeBox(); });
 }
 
-[[nodiscard]] not_null<Ui::SettingsButton*> AddCreateCallButton(
-		not_null<Ui::VerticalLayout*> container,
-		not_null<::Window::SessionController*> controller,
-		Fn<void()> done) {
-	const auto result = container->add(object_ptr<Ui::SettingsButton>(
-		container,
-		tr::lng_confcall_create_call(),
-		st::inviteViaLinkButton), QMargins());
-	Ui::AddSkip(container);
-	Ui::AddDividerText(
-		container,
-		tr::lng_confcall_create_call_description(
-			lt_count,
-			rpl::single(controller->session().appConfig().confcallSizeLimit()
-				* 1.),
-			tr::marked));
-
-	const auto icon = Ui::CreateChild<Info::Profile::FloatingIcon>(
-		result,
-		st::inviteViaLinkIcon,
-		QPoint());
-	result->heightValue(
-	) | rpl::on_next([=](int height) {
-		icon->moveToLeft(
-			st::inviteViaLinkIconPosition.x(),
-			(height - st::inviteViaLinkIcon.height()) / 2);
-	}, icon->lifetime());
-
-	result->setClickedCallback([=] {
-		controller->show(Group::PrepareCreateCallBox(controller, done));
-	});
-
-	return result;
-}
-
 void ShowCallsBox(
 		not_null<::Window::SessionController*> window,
 		bool highlightStartCall) {
@@ -863,17 +828,8 @@ void ShowCallsBox(
 		Ui::AddDivider(groupCalls->entity());
 		Ui::AddSkip(groupCalls->entity());
 
-		const auto button = AddCreateCallButton(
-			box->verticalLayout(),
-			window,
-			crl::guard(box, [=] { box->closeBox(); }));
-		button->events(
-		) | rpl::filter([=](not_null<QEvent*> e) {
-			return (e->type() == QEvent::Enter);
-		}) | rpl::on_next([=] {
-			state->callsDelegate.peerListMouseLeftGeometry();
-		}, button->lifetime());
-
+		// No "Start New Call" button: pararam.io has no conference
+		// calls by link, calls start from a chat.
 		const auto content = box->addRow(
 			object_ptr<PeerListContent>(box, &state->callsController),
 			style::margins());
@@ -918,12 +874,6 @@ void ShowCallsBox(
 			return true;
 		});
 
-		if (highlightStartCall) {
-			box->showFinishes(
-			) | rpl::take(1) | rpl::on_next([=] {
-				Settings::HighlightWidget(button);
-			}, box->lifetime());
-		}
 	}));
 }
 

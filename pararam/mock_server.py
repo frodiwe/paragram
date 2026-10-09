@@ -693,6 +693,14 @@ def main():
     args = parser.parse_args()
     seed()
     if mock_calls is not None:
+        def call_finished(chat_id, starter_id, users):
+            with LOCK:
+                add_post(chat_id, starter_id, '', event={
+                    'type': 'CALL',
+                    'data': {'users': users, 'silent': False,
+                             'is_open': False},
+                })
+        mock_calls.ON_CALL_FINISHED = call_finished
         mock_calls.start(args.calls_port)
     else:
         print('aiohttp / aiortc not installed, calls are not available',
