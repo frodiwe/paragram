@@ -4,6 +4,7 @@
 // are serialized with the generated TL classes and responses are parsed
 // with the generated response types. See pararam/tests/run_backend_test.sh.
 #include "pararam/pararam_backend.h"
+#include "pararam/calls/pararam_media_signaling.h"
 #include "mtproto/mtp_instance.h"
 #include "mtproto/mtproto_response.h"
 #include "base/unixtime.h"
@@ -39,7 +40,25 @@ void Instance::processUpdate(const Response &message) {
 } // namespace MTP
 
 // Minimal replacements for the parts of lib_base the backend uses.
+namespace Pararam::Media {
+
+void SetPendingSignaling(std::shared_ptr<Signaling> signaling) {
+}
+
+std::shared_ptr<Signaling> TakePendingSignaling() {
+	return nullptr;
+}
+
+} // namespace Pararam::Media
+
 namespace base {
+
+bool LogSkipDebug() {
+	return true;
+}
+
+void LogWriteDebug(const QString &message, const char *file, int line) {
+}
 
 void LogWriteMain(const QString &message) {
 	std::printf("[log] %s\n", message.toUtf8().constData());
@@ -57,6 +76,9 @@ namespace unixtime {
 
 TimeId now() {
 	return TimeId(QDateTime::currentSecsSinceEpoch());
+}
+
+void http_invalidate() {
 }
 
 } // namespace unixtime

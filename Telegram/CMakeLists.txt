@@ -1661,9 +1661,17 @@ PRIVATE
     pararam/pararam_api.h
     pararam/pararam_backend.cpp
     pararam/pararam_backend.h
+    pararam/pararam_call_session.cpp
+    pararam/pararam_call_session.h
+    pararam/pararam_call_signaling.cpp
+    pararam/pararam_call_signaling.h
+    pararam/pararam_calls.cpp
+    pararam/pararam_calls.h
     pararam/pararam_data.cpp
     pararam/pararam_data.h
     pararam/pararam_tl_reader.h
+    pararam/pararam_websocket.cpp
+    pararam/pararam_websocket.h
     passport/passport_encryption.cpp
     passport/passport_encryption.h
     passport/passport_form_controller.cpp

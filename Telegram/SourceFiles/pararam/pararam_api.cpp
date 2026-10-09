@@ -22,6 +22,7 @@ constexpr auto kSerializeTag = quint32(0x50415231); // 'PAR1'
 constexpr auto kXsrfHeader = "X-Xsrftoken";
 constexpr auto kRequestTimeoutMs = 30 * 1000;
 constexpr auto kTransferTimeoutMs = 10 * 60 * 1000;
+constexpr auto kAbsoluteTimeoutMs = 20 * 1000;
 constexpr auto kMaxRetries = 2;
 
 [[nodiscard]] QString EnvOr(const char *name, const char *fallback) {
@@ -269,6 +270,65 @@ uint64 Api::jsonRequest(
 		fail(error);
 	});
 	return requestId;
+}
+
+uint64 Api::postAbsolute(
+		const QUrl &url,
+		const QJsonObject &body,
+		const std::vector<std::pair<QByteArray, QByteArray>> &headers,
+		Done done,
+		Fail fail) {
+	const auto requestId = ++_requestIdCounter;
+	auto request = QNetworkRequest(url);
+	request.setTransferTimeout(kAbsoluteTimeoutMs);
+	request.setAttribute(
+		QNetworkRequest::CookieSaveControlAttribute,
+		QNetworkRequest::Manual);
+	request.setAttribute(
+		QNetworkRequest::CookieLoadControlAttribute,
+		QNetworkRequest::Manual);
+	request.setRawHeader("Content-Type", "application/json;charset=UTF-8");
+	for (const auto &[name, value] : headers) {
+		request.setRawHeader(name, value);
+	}
+	const auto reply = _manager.post(
+		request,
+		QJsonDocument(body).toJson(QJsonDocument::Compact));
+	_replies.emplace(requestId, reply);
+	QObject::connect(reply, &QNetworkReply::finished, this, [=] {
+		reply->deleteLater();
+		if (!_replies.contains(requestId)) {
+			return; // Cancelled.
+		}
+		finished(requestId);
+		const auto data = reply->readAll();
+		const auto status = reply->attribute(
+			QNetworkRequest::HttpStatusCodeAttribute).toInt();
+		if (reply->error() == QNetworkReply::NoError
+			&& status >= 200
+			&& status < 300) {
+			const auto document = QJsonDocument::fromJson(data);
+			done(document.isArray()
+				? QJsonValue(document.array())
+				: document.isObject()
+				? QJsonValue(document.object())
+				: QJsonValue(QString::fromUtf8(data)));
+		} else {
+			fail(ParseError(reply, data));
+		}
+	});
+	return requestId;
+}
+
+QByteArray Api::cookieHeader(const QUrl &url) const {
+	auto result = QByteArray();
+	for (const auto &cookie : _jar->cookiesForUrl(url)) {
+		if (!result.isEmpty()) {
+			result.append("; ");
+		}
+		result.append(cookie.toRawForm(QNetworkCookie::NameAndValueOnly));
+	}
+	return result;
 }
 
 void Api::finished(uint64 requestId) {

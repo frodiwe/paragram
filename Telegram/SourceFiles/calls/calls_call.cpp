@@ -25,6 +25,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session.h"
 #include "media/audio/media_audio_track.h"
 #include "mtproto/mtproto_config.h"
+#include "pararam/calls/pararam_call_instance.h"
 #include "mtproto/mtproto_dh_utils.h"
 #include "ui/boxes/confirm_box.h"
 #include "ui/boxes/rate_call_box.h"
@@ -55,6 +56,7 @@ const auto kDefaultVersion = "2.4.4"_q;
 const auto Register = tgcalls::Register<tgcalls::InstanceImpl>();
 const auto RegisterV2 = tgcalls::Register<tgcalls::InstanceV2Impl>();
 const auto RegV2Ref = tgcalls::Register<tgcalls::InstanceV2ReferenceImpl>();
+const auto RegPararam = tgcalls::Register<Pararam::Media::CallInstance>();
 
 [[nodiscard]] base::flat_set<int64> CollectEndpointIds(
 		const QVector<MTPPhoneConnection> &list) {

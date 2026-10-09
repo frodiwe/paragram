@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "pararam/pararam_backend.h"
 
 #include "pararam/pararam_tl_reader.h"
+#include "pararam/pararam_calls.h"
 #include "mtproto/mtp_instance.h"
 #include "mtproto/mtproto_response.h"
 #include "mtproto/details/mtproto_dump_to_text.h"
@@ -315,9 +316,11 @@ Backend::Backend(not_null<MTP::Instance*> instance)
 	});
 	_pollTimer.setSingleShot(true);
 	QObject::connect(&_pollTimer, &QTimer::timeout, this, [=] { poll(); });
+	_calls = std::make_unique<CallManager>(this);
 }
 
 Backend::~Backend() {
+	_calls = nullptr;
 	Registry().remove(_instance.get());
 }
 
@@ -420,6 +423,9 @@ void Backend::sessionChanged() {
 }
 
 void Backend::resetState() {
+	if (_calls) {
+		_calls->stop();
+	}
 	_pollTimer.stop();
 	_loaded = _loading = _polling = false;
 	_syncBroken = false;
@@ -626,6 +632,9 @@ void Backend::dispatch(
 	}
 	if (!authorized()) {
 		replyError(requestId, 401, u"AUTH_KEY_UNREGISTERED"_q);
+		return;
+	}
+	if (_calls->handle(requestId, type, reader)) {
 		return;
 	}
 	switch (type) {
@@ -1007,6 +1016,7 @@ void Backend::ensureLoaded(Done done, Fail fail) {
 			waiter();
 		}
 		schedulePoll(kPollInterval);
+		_calls->start();
 	}, failed);
 }
 
@@ -4023,9 +4033,12 @@ void Backend::getFullUser(mtpRequestId requestId, Reader &reader) {
 		const auto i = _users.find(userId);
 		const auto about = (i != end(_users)) ? i->second.info : QString();
 		const auto chat = chatByUser(userId);
+		const auto calls = (userId != _selfId)
+			? (Flag::f_phone_calls_available | Flag::f_video_calls_available)
+			: Flag();
 		reply(requestId, MTP_users_userFull(
 			MTP_userFull(
-				MTP_flags(about.isEmpty() ? Flag() : Flag::f_about),
+				MTP_flags((about.isEmpty() ? Flag() : Flag::f_about) | calls),
 				MTP_long(userId),
 				MTP_string(about),
 				MTP_peerSettings(
@@ -4786,5 +4799,23 @@ void Backend::saveFilePart(mtpRequestId requestId, Reader &reader, bool big) {
 	(*_uploads)[fileId].parts[part] = bytes;
 	replyTrue(requestId);
 }
+
+} // namespace Pararam
+
+namespace Pararam {
+
+// Used by CallManager.
+template void Backend::reply<MTPdataJSON>(
+	mtpRequestId,
+	const MTPdataJSON&);
+template void Backend::reply<MTPmessages_dhConfig>(
+	mtpRequestId,
+	const MTPmessages_dhConfig&);
+template void Backend::reply<MTPphone_phoneCall>(
+	mtpRequestId,
+	const MTPphone_phoneCall&);
+template void Backend::reply<MTPUpdates>(
+	mtpRequestId,
+	const MTPUpdates&);
 
 } // namespace Pararam

@@ -32,6 +32,11 @@ import uuid
 import struct
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+try:
+    import mock_calls
+except ImportError:  # aiohttp / aiortc are not installed.
+    mock_calls = None
 from urllib.parse import parse_qs, unquote, urlparse
 
 LOCK = threading.RLock()
@@ -318,6 +323,13 @@ class Handler(BaseHTTPRequestHandler):
         if not user_id:
             return
 
+        if path == '/core/call':
+            return self.calls(method)
+        if path == '/user/presence' and method == 'POST':
+            if not self.check_xsrf():
+                return
+            self.json_body()
+            return self.send_json(200, {})
         if path == '/user/me':
             return self.send_json(200, public_user(USERS[user_id]))
         if path == '/user/list':
@@ -597,9 +609,57 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(stored['data'])
 
+    # Calls.
+
+    def calls(self, method):
+        user_id = self.require_user()
+        if not user_id:
+            return
+        if mock_calls is None:
+            return self.send_json(404, {'error': 'calls_not_available'})
+        if method == 'GET':
+            return self.send_json(200, mock_calls.list_calls(
+                user_id, set(visible_chats(user_id))))
+        if not self.check_xsrf():
+            return
+        cid = int(self.json_body().get('chat_id', 0))
+        chat = CHATS.get(cid)
+        if not chat or user_id not in chat['thread_users']:
+            return self.send_json(404, {'error': 'not_found'})
+        return self.send_json(200, mock_calls.access(
+            cid, user_id, chat['pm'], chat['thread_users']))
+
+    def mock_call(self, path, body):
+        cid = int(body.get('chat_id', 0))
+        uid = int(body.get('user_id', 0))
+        if path == '/_mock/call_state':
+            return self.send_json(200, mock_calls.state())
+        if path == '/_mock/call_config':
+            return self.send_json(200, mock_calls.configure(body))
+        chat = CHATS.get(cid)
+        if not chat:
+            return self.send_json(404, {'error': 'not_found'})
+        if path == '/_mock/call_incoming':
+            result = mock_calls.incoming(cid, uid, chat['pm'],
+                                         chat['thread_users'],
+                                         bool(body.get('video')))
+        elif path == '/_mock/call_join':
+            result = mock_calls.join(cid, uid, bool(body.get('video', True)))
+        elif path == '/_mock/call_leave':
+            result = mock_calls.leave(cid, uid)
+        else:
+            result = None
+        if result is None:
+            return self.send_json(404, {'error': 'no_call'})
+        return self.send_json(200, result)
+
     # Test helpers.
 
     def mock(self, method, path):
+        if path.startswith('/_mock/call_'):
+            if mock_calls is None:
+                return self.send_json(404, {'error': 'calls_not_available'})
+            return self.mock_call(path, self.json_body())
         if path == '/_mock/state':
             return self.send_json(200, {
                 str(cid): {'posts': len(posts)}
@@ -629,8 +689,14 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--port', type=int, default=8765)
+    parser.add_argument('--calls-port', type=int, default=8766)
     args = parser.parse_args()
     seed()
+    if mock_calls is not None:
+        mock_calls.start(args.calls_port)
+    else:
+        print('aiohttp / aiortc not installed, calls are not available',
+              flush=True)
     server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
     print('Mock pararam.io listening on http://127.0.0.1:%d' % args.port,
           flush=True)

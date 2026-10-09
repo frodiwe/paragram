@@ -108,6 +108,19 @@ public:
 		Done done,
 		Fail fail);
 
+	// JSON POST to another host (the call media servers), without the
+	// session cookies and the xsrf token. 5xx and network errors are
+	// not retried.
+	uint64 postAbsolute(
+		const QUrl &url,
+		const QJsonObject &body,
+		const std::vector<std::pair<QByteArray, QByteArray>> &headers,
+		Done done,
+		Fail fail);
+
+	// "Cookie" header value for opening a socket to the given url.
+	[[nodiscard]] QByteArray cookieHeader(const QUrl &url) const;
+
 	void cancel(uint64 requestId);
 	void cancelAll();
 

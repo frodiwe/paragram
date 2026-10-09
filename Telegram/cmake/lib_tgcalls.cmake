@@ -207,6 +207,16 @@ PRIVATE
     third-party/json11.hpp
 )
 
+# pararam.io call media, built here to use the WebRTC headers.
+nice_target_sources(lib_tgcalls ${src_loc}
+PRIVATE
+    pararam/calls/pararam_call_instance.cpp
+    pararam/calls/pararam_call_instance.h
+    pararam/calls/pararam_media_engine.cpp
+    pararam/calls/pararam_media_engine.h
+    pararam/calls/pararam_media_signaling.h
+)
+
 target_link_libraries(lib_tgcalls
 PRIVATE
     desktop-app::external_webrtc

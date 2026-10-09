@@ -24,19 +24,33 @@ compile "$ROOT/pararam/tests/backend_test.cpp" "$OUT/backend_test.o"
 compile "$ROOT/Telegram/SourceFiles/pararam/pararam_backend.cpp" "$OUT/backend.o"
 compile "$ROOT/Telegram/SourceFiles/pararam/pararam_api.cpp" "$OUT/api.o"
 compile "$ROOT/Telegram/SourceFiles/pararam/pararam_data.cpp" "$OUT/data.o"
+compile "$ROOT/Telegram/SourceFiles/pararam/pararam_calls.cpp" "$OUT/calls.o"
+compile "$ROOT/Telegram/SourceFiles/pararam/pararam_call_session.cpp" "$OUT/call_session.o"
+compile "$ROOT/Telegram/SourceFiles/pararam/pararam_call_signaling.cpp" "$OUT/call_signaling.o"
+compile "$ROOT/Telegram/SourceFiles/pararam/pararam_websocket.cpp" "$OUT/websocket.o"
 
 QT=$(grep -m1 "Qt6Core_DIR:PATH=" CMakeCache.txt | sed 's|.*=||; s|/lib/cmake/Qt6Core||')
 echo "Linking"
 c++ -o "$OUT/backend_test" \
 	"$OUT/backend_test.o" "$OUT/backend.o" "$OUT/api.o" "$OUT/data.o" \
+	"$OUT/calls.o" "$OUT/call_session.o" "$OUT/call_signaling.o" \
+	"$OUT/websocket.o" \
 	Telegram/CMakeFiles/td_scheme.dir/gen/scheme.cpp.o \
 	Telegram/CMakeFiles/td_scheme.dir/gen/scheme-dump_to_text.cpp.o \
 	Telegram/CMakeFiles/td_mtproto.dir/SourceFiles/mtproto/details/mtproto_dump_to_text.cpp.o \
 	Telegram/lib_tl/CMakeFiles/lib_tl.dir/tl/tl_basic_types.cpp.o \
+	Telegram/CMakeFiles/td_mtproto.dir/SourceFiles/mtproto/mtproto_dh_utils.cpp.o \
+	Telegram/lib_base/CMakeFiles/lib_base.dir/base/timer.cpp.o \
+	Telegram/lib_base/CMakeFiles/lib_base.dir/base/random.cpp.o \
+	Telegram/lib_base/CMakeFiles/lib_base.dir/base/bytes.cpp.o \
+	Telegram/lib_base/CMakeFiles/lib_base.dir/base/concurrent_timer.cpp.o \
 	Telegram/lib_crl/CMakeFiles/lib_crl.dir/crl/crl_time.cpp.o \
 	Telegram/lib_crl/CMakeFiles/lib_crl.dir/crl/linux/crl_linux_time.cpp.o \
+	Telegram/lib_crl/CMakeFiles/lib_crl.dir/crl/common/crl_common_on_main.cpp.o \
+	Telegram/lib_crl/CMakeFiles/lib_crl.dir/crl/common/crl_common_queue.cpp.o \
+	Telegram/lib_crl/CMakeFiles/lib_crl.dir/crl/common/crl_common_list.cpp.o \
 	-L"$QT/lib" -Wl,-rpath,"$QT/lib" \
-	-lQt6Gui -lQt6Network -lQt6Core -lz -lpthread
+	-lQt6Gui -lQt6Network -lQt6Core -lcrypto -lz -lpthread
 
 python3 "$ROOT/pararam/mock_server.py" --port "$PORT" > "$OUT/mock.log" 2>&1 &
 MOCK=$!

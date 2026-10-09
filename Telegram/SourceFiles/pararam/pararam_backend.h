@@ -29,6 +29,7 @@ class Instance;
 namespace Pararam {
 
 class Reader;
+class CallManager;
 
 // Translates MTProto requests issued by the Telegram Desktop UI
 // into pararam.io REST API calls and produces MTProto responses
@@ -77,6 +78,8 @@ public:
 	[[nodiscard]] static mtpBuffer ErrorBuffer(int code, const QString &type);
 
 private:
+	friend class CallManager;
+
 	struct Download;
 	struct Upload;
 	struct HistoryQuery;
@@ -356,6 +359,8 @@ private:
 	QString _syncTime;
 
 	std::function<void()> _sessionChanged;
+
+	std::unique_ptr<CallManager> _calls;
 
 };
 
