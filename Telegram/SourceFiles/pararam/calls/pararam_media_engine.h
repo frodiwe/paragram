@@ -24,6 +24,7 @@ namespace webrtc {
 class AudioDeviceModule;
 class TaskQueueFactory;
 class VideoFrame;
+class VideoTrackSourceInterface;
 } // namespace webrtc
 
 namespace tgcalls {
@@ -67,6 +68,10 @@ public:
 	void setVideoCapture(
 		std::shared_ptr<tgcalls::VideoCaptureInterface> capture);
 	void videoCaptureUpdated(); // Camera / screen switched.
+	void setVideoSource(
+		std::function<webrtc::scoped_refptr<
+			webrtc::VideoTrackSourceInterface>()> getSource,
+		bool screen);
 
 	// userId == 0 means the first other participant (for 1:1 calls).
 	void setVideoSink(

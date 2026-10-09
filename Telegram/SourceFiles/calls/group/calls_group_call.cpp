@@ -41,6 +41,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "webrtc/webrtc_environment.h"
 
 #include <tgcalls/group/GroupInstanceCustomImpl.h>
+#include "pararam/calls/pararam_group_instance.h"
 #include <tgcalls/VideoCaptureInterface.h>
 #include <tgcalls/StaticThreads.h>
 #include <QtCore/QJsonDocument>
@@ -3143,7 +3144,7 @@ bool GroupCall::tryCreateController() {
 	}
 
 	LOG(("Call Info: Creating group instance"));
-	_instance = std::make_unique<tgcalls::GroupInstanceCustomImpl>(
+	_instance = std::make_unique<Pararam::Media::GroupInstance>(
 		std::move(descriptor));
 
 	updateInstanceMuteState();

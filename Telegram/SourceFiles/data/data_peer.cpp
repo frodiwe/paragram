@@ -1887,8 +1887,8 @@ bool PeerData::canManageGroupCall() const {
 		if (group->isMonoforum()) {
 			return false;
 		}
-		return group->amCreator()
-			|| (group->adminRights() & ChatAdminRight::ManageCall);
+		// Anyone in a pararam.io chat can start a call.
+		return group->isMegagroup() && group->amIn();
 	}
 	Unexpected("Peer type in PeerData::canManageGroupCall.");
 }

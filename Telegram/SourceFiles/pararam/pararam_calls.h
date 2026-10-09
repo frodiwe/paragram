@@ -45,8 +45,14 @@ public:
 	void start(); // Logged in and loaded, start watching for calls.
 	void stop(); // Logged out.
 
+	// Group calls, for channelFull.call and the channel flags.
+	[[nodiscard]] MTPInputGroupCall groupCallInput(int64 chatId) const;
+	[[nodiscard]] bool groupCallActive(int64 chatId) const;
+	[[nodiscard]] bool groupCallNotEmpty(int64 chatId) const;
+
 private:
 	struct OneToOne;
+	struct Group;
 
 	void requestCall(mtpRequestId requestId, Reader &reader);
 	void acceptCall(mtpRequestId requestId, Reader &reader);
@@ -71,6 +77,41 @@ private:
 	[[nodiscard]] MTPPhoneCallProtocol protocol() const;
 	[[nodiscard]] int32 duration() const;
 
+	// Group calls.
+	void createGroupCall(mtpRequestId requestId, Reader &reader);
+	void joinGroupCall(mtpRequestId requestId, Reader &reader);
+	void leaveGroupCall(mtpRequestId requestId, Reader &reader);
+	void discardGroupCall(mtpRequestId requestId, Reader &reader);
+	void getGroupCall(mtpRequestId requestId, Reader &reader);
+	void getGroupParticipants(mtpRequestId requestId, Reader &reader);
+	void editGroupCallParticipant(mtpRequestId requestId, Reader &reader);
+	void checkGroupCall(mtpRequestId requestId, Reader &reader);
+	void getGroupCallJoinAs(mtpRequestId requestId, Reader &reader);
+	[[nodiscard]] Group *groupByInput(const MTPInputGroupCall &call) const;
+	[[nodiscard]] Group &ensureGroup(int64 chatId);
+	void startGroupSession(Group &group);
+	void groupApproved(int64 chatId);
+	void groupChanged(int64 chatId, int64 userId, bool left);
+	void groupEnded(int64 chatId);
+	void finishGroupSession(Group &group);
+	void applyGroupCalls(const std::vector<ActiveCall> &calls);
+	void removeGroup(int64 chatId);
+	[[nodiscard]] std::vector<int64> groupUsers(const Group &group) const;
+	[[nodiscard]] MTPGroupCall groupToMTP(const Group &group) const;
+	[[nodiscard]] MTPInputGroupCall groupInputToMTP(const Group &group) const;
+	[[nodiscard]] MTPGroupCallParticipant participantToMTP(
+		const Group &group,
+		int64 userId,
+		bool left = false) const;
+	[[nodiscard]] QVector<MTPGroupCallParticipant> participantsToMTP(
+		const Group &group) const;
+	[[nodiscard]] MTPUpdates groupUpdates(
+		const Group &group,
+		QVector<MTPUpdate> updates) const;
+	void pushParticipants(
+		Group &group,
+		QVector<MTPGroupCallParticipant> participants);
+
 	void connectSocket();
 	void socketClosed();
 	void refreshCalls();
@@ -80,6 +121,8 @@ private:
 
 	const not_null<Backend*> _backend;
 	std::unique_ptr<OneToOne> _call;
+	base::flat_map<int64, std::unique_ptr<Group>> _groups;
+	uint64 _groupCallIdCounter = 0;
 
 	std::unique_ptr<WebSocket> _socket;
 	bool _socketConnected = false;

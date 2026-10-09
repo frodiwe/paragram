@@ -212,6 +212,8 @@ nice_target_sources(lib_tgcalls ${src_loc}
 PRIVATE
     pararam/calls/pararam_call_instance.cpp
     pararam/calls/pararam_call_instance.h
+    pararam/calls/pararam_group_instance.cpp
+    pararam/calls/pararam_group_instance.h
     pararam/calls/pararam_media_engine.cpp
     pararam/calls/pararam_media_engine.h
     pararam/calls/pararam_media_signaling.h

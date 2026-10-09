@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "pararam/pararam_tl_reader.h"
 #include "pararam/pararam_websocket.h"
 #include "pararam/calls/pararam_call_instance.h"
+#include "pararam/calls/pararam_media_signaling.h"
 #include "base/openssl_help.h"
 #include "base/random.h"
 #include "base/unixtime.h"
@@ -120,6 +121,26 @@ struct CallManager::OneToOne {
 	bool approved = false;
 };
 
+struct CallManager::Group {
+	int64 chatId = 0;
+	uint64 id = 0;
+	uint64 accessHash = 0;
+	int32 version = 1;
+	TimeId date = 0;
+	std::vector<int64> listedUsers; // From GET /core/call.
+	base::flat_map<int64, TimeId> joinDates;
+
+	std::unique_ptr<CallSession> session;
+	std::shared_ptr<SessionSignaling> signaling;
+	uint32 selfSource = 0;
+	bool joined = false;
+	bool muted = true;
+	bool videoStopped = true;
+	TimeId selfJoinDate = 0;
+	mtpRequestId joinRequestId = 0;
+	bool listed = false;
+};
+
 CallManager::CallManager(not_null<Backend*> backend)
 : _backend(backend)
 , _socketReconnectTimer([=] { connectSocket(); })
@@ -155,7 +176,39 @@ bool CallManager::handle(
 	case mtpc_phone_saveCallDebug:
 	case mtpc_phone_sendSignalingData:
 	case mtpc_phone_saveCallLog:
+	case mtpc_phone_saveDefaultGroupCallJoinAs:
 		_backend->replyTrue(requestId);
+		break;
+	case mtpc_phone_createGroupCall: createGroupCall(requestId, reader); break;
+	case mtpc_phone_joinGroupCall: joinGroupCall(requestId, reader); break;
+	case mtpc_phone_leaveGroupCall: leaveGroupCall(requestId, reader); break;
+	case mtpc_phone_discardGroupCall:
+		discardGroupCall(requestId, reader);
+		break;
+	case mtpc_phone_getGroupCall: getGroupCall(requestId, reader); break;
+	case mtpc_phone_getGroupParticipants:
+		getGroupParticipants(requestId, reader);
+		break;
+	case mtpc_phone_editGroupCallParticipant:
+		editGroupCallParticipant(requestId, reader);
+		break;
+	case mtpc_phone_checkGroupCall: checkGroupCall(requestId, reader); break;
+	case mtpc_phone_getGroupCallJoinAs:
+		getGroupCallJoinAs(requestId, reader);
+		break;
+	case mtpc_phone_toggleGroupCallSettings:
+	case mtpc_phone_editGroupCallTitle:
+	case mtpc_phone_toggleGroupCallRecord:
+	case mtpc_phone_toggleGroupCallStartSubscription:
+		_backend->reply(requestId, _backend->wrapUpdates({}, {}, {}));
+		break;
+	case mtpc_phone_joinGroupCallPresentation:
+		// Screen sharing in group calls is not supported yet,
+		// use the camera button to share a window in private calls.
+		_backend->replyError(requestId, 400, u"PARARAM_NOT_SUPPORTED"_q);
+		break;
+	case mtpc_phone_leaveGroupCallPresentation:
+		_backend->reply(requestId, _backend->wrapUpdates({}, {}, {}));
 		break;
 	default: return false;
 	}
@@ -187,6 +240,11 @@ void CallManager::stop() {
 			_call->session->leave();
 		}
 		_call = nullptr;
+	}
+	for (auto &[chatId, group] : base::take(_groups)) {
+		if (group->session) {
+			group->session->leave();
+		}
 	}
 	_seenSessions.clear();
 }
@@ -565,6 +623,620 @@ void CallManager::finishCall(const MTPPhoneCallDiscardReason &reason) {
 	scheduleRefresh(kRefreshAfterEvent);
 }
 
+// Group calls.
+
+MTPInputGroupCall CallManager::groupCallInput(int64 chatId) const {
+	const auto i = _groups.find(chatId);
+	return (i != end(_groups))
+		? groupInputToMTP(*i->second)
+		: MTPInputGroupCall();
+}
+
+bool CallManager::groupCallActive(int64 chatId) const {
+	return _groups.contains(chatId);
+}
+
+bool CallManager::groupCallNotEmpty(int64 chatId) const {
+	const auto i = _groups.find(chatId);
+	return (i != end(_groups)) && !groupUsers(*i->second).empty();
+}
+
+auto CallManager::groupByInput(const MTPInputGroupCall &call) const
+-> Group* {
+	return call.match([&](const MTPDinputGroupCall &data) -> Group* {
+		for (const auto &[chatId, group] : _groups) {
+			if (group->id == uint64(data.vid().v)) {
+				return group.get();
+			}
+		}
+		return nullptr;
+	}, [](const auto &) -> Group* {
+		return nullptr;
+	});
+}
+
+auto CallManager::ensureGroup(int64 chatId) -> Group& {
+	auto &result = _groups[chatId];
+	if (!result) {
+		result = std::make_unique<Group>();
+		result->chatId = chatId;
+		// Unique while the app runs, the call UI keys its data by the id.
+		result->id = (uint64(chatId) << 16) | (++_groupCallIdCounter & 0xFFFF);
+		result->accessHash = base::RandomValue<uint64>();
+		result->date = base::unixtime::now();
+	}
+	return *result;
+}
+
+std::vector<int64> CallManager::groupUsers(const Group &group) const {
+	auto result = std::vector<int64>();
+	if (group.session && group.joined) {
+		for (const auto &[id, user] : group.session->users()) {
+			if (!user.external) {
+				result.push_back(id);
+			}
+		}
+		result.push_back(_backend->_selfId);
+	} else {
+		for (const auto id : group.listedUsers) {
+			if (id != _backend->_selfId) {
+				result.push_back(id);
+			}
+		}
+	}
+	return result;
+}
+
+MTPInputGroupCall CallManager::groupInputToMTP(const Group &group) const {
+	return MTP_inputGroupCall(
+		MTP_long(group.id),
+		MTP_long(group.accessHash));
+}
+
+MTPGroupCall CallManager::groupToMTP(const Group &group) const {
+	using Flag = MTPDgroupCall::Flag;
+	return MTP_groupCall(
+		MTP_flags(Flag::f_can_start_video),
+		MTP_long(group.id),
+		MTP_long(group.accessHash),
+		MTP_int(int(groupUsers(group).size())),
+		MTPstring(), // title
+		MTPint(), // stream_dc_id
+		MTPint(), // record_start_date
+		MTPint(), // schedule_date
+		MTPint(), // unmuted_video_count
+		MTP_int(1000), // unmuted_video_limit
+		MTP_int(group.version),
+		MTPstring(), // invite_link
+		MTPlong(), // send_paid_messages_stars
+		MTPPeer()); // default_send_as
+}
+
+MTPGroupCallParticipant CallManager::participantToMTP(
+		const Group &group,
+		int64 userId,
+		bool left) const {
+	using Flag = MTPDgroupCallParticipant::Flag;
+	const auto self = (userId == _backend->_selfId);
+	const auto date = [&] {
+		if (self && group.selfJoinDate) {
+			return group.selfJoinDate;
+		}
+		const auto i = group.joinDates.find(userId);
+		return (i != end(group.joinDates)) ? i->second : group.date;
+	}();
+	auto flags = Flag::f_can_self_unmute | Flag::f_versioned;
+	auto video = MTPGroupCallParticipantVideo();
+	auto presentation = MTPGroupCallParticipantVideo();
+	auto source = Media::AudioSourceFor(userId);
+	if (left) {
+		flags |= Flag::f_left;
+	}
+	if (self) {
+		flags |= Flag::f_self;
+		source = group.selfSource;
+		if (group.muted) {
+			flags |= Flag::f_muted;
+		}
+	} else if (group.session && group.joined) {
+		const auto &users = group.session->users();
+		const auto i = users.find(userId);
+		if (i != end(users)) {
+			const auto &user = i->second;
+			if (!user.audio) {
+				flags |= Flag::f_muted;
+			}
+			if (user.video) {
+				const auto description = MTP_groupCallParticipantVideo(
+					MTP_flags(0),
+					MTP_string(Media::EndpointFor(userId)),
+					MTP_vector<MTPGroupCallParticipantVideoSourceGroup>(
+						1,
+						MTP_groupCallParticipantVideoSourceGroup(
+							MTP_string("SIM"),
+							MTP_vector<MTPint>(1, MTP_int(
+								Media::VideoSourceFor(userId))))),
+					MTPint());
+				if (user.videoSource == u"screen"_q) {
+					flags |= Flag::f_presentation;
+					presentation = description;
+				} else {
+					flags |= Flag::f_video;
+					video = description;
+				}
+			}
+		}
+	}
+	return MTP_groupCallParticipant(
+		MTP_flags(flags),
+		MTP_peerUser(MTP_long(userId)),
+		MTP_int(date),
+		MTPint(), // active_date
+		MTP_int(int32(source)),
+		MTPint(), // volume
+		MTPstring(), // about
+		MTPlong(), // raise_hand_rating
+		video,
+		presentation,
+		MTPlong()); // paid_stars_total
+}
+
+QVector<MTPGroupCallParticipant> CallManager::participantsToMTP(
+		const Group &group) const {
+	auto result = QVector<MTPGroupCallParticipant>();
+	for (const auto userId : groupUsers(group)) {
+		result.push_back(participantToMTP(group, userId));
+	}
+	return result;
+}
+
+MTPUpdates CallManager::groupUpdates(
+		const Group &group,
+		QVector<MTPUpdate> updates) const {
+	return _backend->wrapUpdates(
+		std::move(updates),
+		groupUsers(group),
+		{ group.chatId });
+}
+
+void CallManager::pushParticipants(
+		Group &group,
+		QVector<MTPGroupCallParticipant> participants) {
+	if (participants.isEmpty()) {
+		return;
+	}
+	++group.version;
+	_backend->pushUpdates(groupUpdates(group, {
+		MTP_updateGroupCallParticipants(
+			groupInputToMTP(group),
+			MTP_vector<MTPGroupCallParticipant>(std::move(participants)),
+			MTP_int(group.version)),
+	}));
+}
+
+void CallManager::createGroupCall(mtpRequestId requestId, Reader &reader) {
+	[[maybe_unused]] const auto flags = reader.flags();
+	const auto peer = reader.read<MTPInputPeer>();
+	[[maybe_unused]] const auto randomId = reader.int32Value();
+	const auto chat = _backend->chatByInputPeer(peer);
+	if (!chat || chat->info.pm) {
+		_backend->replyError(requestId, 400, u"PEER_ID_INVALID"_q);
+		return;
+	}
+	auto &group = ensureGroup(chat->info.id);
+	_backend->reply(requestId, groupUpdates(group, {
+		MTP_updateGroupCall(
+			MTP_flags(MTPDupdateGroupCall::Flag::f_peer),
+			_backend->peerToMTP(*chat),
+			groupToMTP(group)),
+	}));
+}
+
+void CallManager::joinGroupCall(mtpRequestId requestId, Reader &reader) {
+	const auto flags = reader.flags();
+	const auto call = reader.read<MTPInputGroupCall>();
+	[[maybe_unused]] const auto joinAs = reader.read<MTPInputPeer>();
+	if (flags & (1U << 1)) {
+		[[maybe_unused]] const auto inviteHash = reader.string();
+	}
+	if (flags & (1U << 3)) {
+		[[maybe_unused]] const auto key = reader.read<MTPint256>();
+		[[maybe_unused]] const auto block = reader.bytes();
+	}
+	const auto params = reader.read<MTPDataJSON>();
+	const auto group = groupByInput(call);
+	if (!reader.ok() || !group) {
+		_backend->replyError(requestId, 400, u"GROUPCALL_INVALID"_q);
+		return;
+	} else if (group->joinRequestId || group->joined) {
+		_backend->replyError(requestId, 400, u"GROUPCALL_ALREADY_JOINED"_q);
+		return;
+	}
+	const auto json = QJsonDocument::fromJson(
+		params.c_dataJSON().vdata().v).object();
+	group->selfSource = uint32(json.value(u"ssrc"_q).toDouble());
+	group->muted = (flags & (1U << 0)) != 0;
+	group->videoStopped = (flags & (1U << 2)) != 0;
+	group->joinRequestId = requestId;
+	startGroupSession(*group);
+}
+
+void CallManager::startGroupSession(Group &group) {
+	group.session = std::make_unique<CallSession>(
+		&_backend->_api,
+		CallSession::Options{
+			.chatId = group.chatId,
+			.selfId = _backend->_selfId,
+			.selfName = _backend->_self.name,
+			.silent = true,
+			.stayInCall = true,
+		});
+	const auto chatId = group.chatId;
+	const auto session = group.session.get();
+	const auto weak = QPointer<CallManager>(this);
+	const auto alive = [=] {
+		if (!weak) {
+			return false;
+		}
+		const auto i = _groups.find(chatId);
+		return (i != end(_groups)) && (i->second->session.get() == session);
+	};
+	session->addListener({
+		.approved = [=] {
+			if (alive()) {
+				groupApproved(chatId);
+			}
+		},
+		.joined = [=](const CallUser &user) {
+			if (alive()) {
+				groupChanged(chatId, user.id, false);
+			}
+		},
+		.left = [=](int64 userId) {
+			if (alive()) {
+				groupChanged(chatId, userId, true);
+			}
+		},
+		.changed = [=](const CallUser &user) {
+			if (alive()) {
+				groupChanged(chatId, user.id, false);
+			}
+		},
+		.ended = [=](CallSession::EndReason, const QString &) {
+			if (alive()) {
+				groupEnded(chatId);
+			}
+		},
+	});
+	session->start();
+}
+
+void CallManager::groupApproved(int64 chatId) {
+	auto &group = *_groups[chatId];
+	const auto now = base::unixtime::now();
+	group.joined = true;
+	group.selfJoinDate = now;
+	for (const auto &[id, user] : group.session->users()) {
+		group.joinDates.emplace(id, now);
+	}
+	group.signaling = std::make_shared<SessionSignaling>(group.session.get());
+	group.signaling->subscribe();
+	Media::SetPendingSignaling(group.signaling);
+
+	auto response = QJsonObject();
+	auto video = QJsonObject();
+	video.insert(
+		u"endpoint"_q,
+		QString::fromStdString(Media::EndpointFor(_backend->_selfId)));
+	response.insert(u"video"_q, video);
+	response.insert(u"pararam"_q, true);
+
+	++group.version;
+	const auto chat = _backend->chatById(chatId);
+	auto updates = QVector<MTPUpdate>{
+		MTP_updateGroupCallConnection(
+			MTP_flags(0),
+			MTP_dataJSON(MTP_bytes(
+				QJsonDocument(response).toJson(QJsonDocument::Compact)))),
+		MTP_updateGroupCallParticipants(
+			groupInputToMTP(group),
+			MTP_vector<MTPGroupCallParticipant>(participantsToMTP(group)),
+			MTP_int(group.version)),
+	};
+	if (chat) {
+		updates.push_back(MTP_updateGroupCall(
+			MTP_flags(MTPDupdateGroupCall::Flag::f_peer),
+			_backend->peerToMTP(*chat),
+			groupToMTP(group)));
+	}
+	_backend->reply(
+		std::exchange(group.joinRequestId, 0),
+		groupUpdates(group, std::move(updates)));
+}
+
+void CallManager::groupChanged(int64 chatId, int64 userId, bool left) {
+	auto &group = *_groups[chatId];
+	if (!group.joined) {
+		return;
+	}
+	if (left) {
+		group.joinDates.remove(userId);
+	} else {
+		group.joinDates.emplace(userId, base::unixtime::now());
+	}
+	const auto users = std::vector<int64>{ userId };
+	_backend->ensureUsers(users, [=] {
+		const auto i = _groups.find(chatId);
+		if (i == end(_groups) || !i->second->joined) {
+			return;
+		}
+		pushParticipants(*i->second, {
+			participantToMTP(*i->second, userId, left),
+		});
+	});
+}
+
+void CallManager::groupEnded(int64 chatId) {
+	auto &group = *_groups[chatId];
+	if (const auto requestId = std::exchange(group.joinRequestId, 0)) {
+		_backend->replyError(requestId, 400, u"GROUPCALL_JOIN_FAILED"_q);
+		finishGroupSession(group);
+		return;
+	}
+	if (group.joined) {
+		pushParticipants(group, {
+			participantToMTP(group, _backend->_selfId, true),
+		});
+	}
+	finishGroupSession(group);
+	scheduleRefresh(kRefreshAfterEvent);
+}
+
+void CallManager::finishGroupSession(Group &group) {
+	group.joined = false;
+	group.signaling = nullptr;
+	if (const auto session = group.session.release()) {
+		session->leave();
+		session->deleteLater();
+	}
+}
+
+void CallManager::leaveGroupCall(mtpRequestId requestId, Reader &reader) {
+	const auto call = reader.read<MTPInputGroupCall>();
+	[[maybe_unused]] const auto source = reader.int32Value();
+	const auto group = groupByInput(call);
+	if (!group) {
+		_backend->reply(requestId, _backend->wrapUpdates({}, {}, {}));
+		return;
+	}
+	const auto wasJoined = group->joined;
+	auto self = participantToMTP(*group, _backend->_selfId, true);
+	finishGroupSession(*group);
+	if (wasJoined) {
+		++group->version;
+	}
+	_backend->reply(requestId, groupUpdates(*group, wasJoined
+		? QVector<MTPUpdate>{ MTP_updateGroupCallParticipants(
+			groupInputToMTP(*group),
+			MTP_vector<MTPGroupCallParticipant>(1, self),
+			MTP_int(group->version)) }
+		: QVector<MTPUpdate>()));
+	scheduleRefresh(kRefreshAfterEvent);
+}
+
+void CallManager::discardGroupCall(mtpRequestId requestId, Reader &reader) {
+	const auto call = reader.read<MTPInputGroupCall>();
+	const auto group = groupByInput(call);
+	if (!group) {
+		_backend->reply(requestId, _backend->wrapUpdates({}, {}, {}));
+		return;
+	}
+	// pararam.io calls end when everyone left, we only leave.
+	finishGroupSession(*group);
+	_backend->reply(requestId, groupUpdates(*group, {}));
+	scheduleRefresh(kRefreshAfterEvent);
+}
+
+void CallManager::getGroupCall(mtpRequestId requestId, Reader &reader) {
+	const auto call = reader.read<MTPInputGroupCall>();
+	[[maybe_unused]] const auto limit = reader.int32Value();
+	const auto group = groupByInput(call);
+	if (!group) {
+		_backend->replyError(requestId, 400, u"GROUPCALL_INVALID"_q);
+		return;
+	}
+	const auto chatId = group->chatId;
+	const auto weak = QPointer<CallManager>(this);
+	_backend->ensureUsers(groupUsers(*group), [=] {
+		const auto i = weak ? _groups.find(chatId) : end(_groups);
+		if (!weak || i == end(_groups)) {
+			_backend->replyError(requestId, 400, u"GROUPCALL_INVALID"_q);
+			return;
+		}
+		const auto &group = *i->second;
+		_backend->reply(requestId, MTP_phone_groupCall(
+			groupToMTP(group),
+			MTP_vector<MTPGroupCallParticipant>(participantsToMTP(group)),
+			MTP_string(),
+			_backend->chatsToMTP({ group.chatId }),
+			_backend->usersToMTP(groupUsers(group))));
+	});
+}
+
+void CallManager::getGroupParticipants(
+		mtpRequestId requestId,
+		Reader &reader) {
+	const auto call = reader.read<MTPInputGroupCall>();
+	const auto group = groupByInput(call);
+	if (!group) {
+		_backend->replyError(requestId, 400, u"GROUPCALL_INVALID"_q);
+		return;
+	}
+	const auto chatId = group->chatId;
+	const auto weak = QPointer<CallManager>(this);
+	_backend->ensureUsers(groupUsers(*group), [=] {
+		const auto i = weak ? _groups.find(chatId) : end(_groups);
+		if (!weak || i == end(_groups)) {
+			_backend->replyError(requestId, 400, u"GROUPCALL_INVALID"_q);
+			return;
+		}
+		const auto &group = *i->second;
+		const auto participants = participantsToMTP(group);
+		_backend->reply(requestId, MTP_phone_groupParticipants(
+			MTP_int(participants.size()),
+			MTP_vector<MTPGroupCallParticipant>(participants),
+			MTP_string(),
+			_backend->chatsToMTP({ group.chatId }),
+			_backend->usersToMTP(groupUsers(group)),
+			MTP_int(group.version)));
+	});
+}
+
+void CallManager::editGroupCallParticipant(
+		mtpRequestId requestId,
+		Reader &reader) {
+	const auto flags = reader.flags();
+	const auto call = reader.read<MTPInputGroupCall>();
+	const auto participant = reader.read<MTPInputPeer>();
+	auto muted = std::optional<bool>();
+	auto videoStopped = std::optional<bool>();
+	if (flags & (1U << 0)) {
+		muted = mtpIsTrue(reader.read<MTPBool>());
+	}
+	if (flags & (1U << 1)) {
+		[[maybe_unused]] const auto volume = reader.int32Value();
+	}
+	if (flags & (1U << 2)) {
+		[[maybe_unused]] const auto raiseHand = reader.read<MTPBool>();
+	}
+	if (flags & (1U << 3)) {
+		videoStopped = mtpIsTrue(reader.read<MTPBool>());
+	}
+	const auto group = groupByInput(call);
+	const auto self = (_backend->userIdFromInputPeer(participant)
+		== _backend->_selfId);
+	if (!reader.ok() || !group || !self || !group->joined) {
+		_backend->reply(requestId, _backend->wrapUpdates({}, {}, {}));
+		return;
+	}
+	if (muted) {
+		group->muted = *muted;
+	}
+	if (videoStopped) {
+		group->videoStopped = *videoStopped;
+	}
+	++group->version;
+	_backend->reply(requestId, groupUpdates(*group, {
+		MTP_updateGroupCallParticipants(
+			groupInputToMTP(*group),
+			MTP_vector<MTPGroupCallParticipant>(
+				1,
+				participantToMTP(*group, _backend->_selfId)),
+			MTP_int(group->version)),
+	}));
+}
+
+void CallManager::checkGroupCall(mtpRequestId requestId, Reader &reader) {
+	const auto call = reader.read<MTPInputGroupCall>();
+	const auto sources = reader.read<MTPVector<MTPint>>();
+	const auto group = groupByInput(call);
+	_backend->reply(requestId, (group && group->joined)
+		? sources
+		: MTPVector<MTPint>(MTP_vector<MTPint>()));
+}
+
+void CallManager::getGroupCallJoinAs(mtpRequestId requestId, Reader &reader) {
+	[[maybe_unused]] const auto peer = reader.read<MTPInputPeer>();
+	_backend->reply(requestId, MTP_phone_joinAsPeers(
+		MTP_vector<MTPPeer>(1, MTP_peerUser(MTP_long(_backend->_selfId))),
+		MTP_vector<MTPChat>(),
+		_backend->usersToMTP({ _backend->_selfId })));
+}
+
+void CallManager::applyGroupCalls(const std::vector<ActiveCall> &calls) {
+	auto seen = base::flat_set<int64>();
+	for (const auto &call : calls) {
+		const auto chat = _backend->chatById(call.chatId);
+		if (!chat || chat->info.pm) {
+			continue;
+		}
+		seen.emplace(call.chatId);
+		const auto known = _groups.contains(call.chatId);
+		auto &group = ensureGroup(call.chatId);
+		const auto was = group.listedUsers;
+		group.listed = true;
+		group.listedUsers = call.users;
+		for (const auto id : call.users) {
+			group.joinDates.emplace(id, base::unixtime::now());
+		}
+		if (!known) {
+			// Make the UI reload channelFull and see the call.
+			_backend->pushUpdates(_backend->wrapUpdates({
+				MTP_updateChannel(MTP_long(call.chatId)),
+			}, {}, { call.chatId }));
+		} else if (!group.joined && was != call.users) {
+			auto changes = QVector<MTPGroupCallParticipant>();
+			for (const auto id : call.users) {
+				if (!ranges::contains(was, id) && id != _backend->_selfId) {
+					changes.push_back(participantToMTP(group, id));
+				}
+			}
+			for (const auto id : was) {
+				if (!ranges::contains(call.users, id)
+					&& id != _backend->_selfId) {
+					changes.push_back(participantToMTP(group, id, true));
+				}
+			}
+			const auto chatId = call.chatId;
+			const auto weak = QPointer<CallManager>(this);
+			_backend->ensureUsers(call.users, [=] {
+				const auto i = weak ? _groups.find(chatId) : end(_groups);
+				if (weak && i != end(_groups)) {
+					pushParticipants(*i->second, changes);
+				}
+			});
+		}
+	}
+	auto removed = std::vector<int64>();
+	for (const auto &[chatId, group] : _groups) {
+		if (!seen.contains(chatId)
+			&& !group->joined
+			&& !group->joinRequestId
+			&& (group->listed
+				|| base::unixtime::now() - group->date > 60)) {
+			removed.push_back(chatId);
+		}
+	}
+	for (const auto chatId : removed) {
+		removeGroup(chatId);
+	}
+}
+
+void CallManager::removeGroup(int64 chatId) {
+	const auto i = _groups.find(chatId);
+	if (i == end(_groups)) {
+		return;
+	}
+	auto group = std::move(i->second);
+	_groups.erase(i);
+	finishGroupSession(*group);
+	const auto chat = _backend->chatById(chatId);
+	if (!chat) {
+		return;
+	}
+	_backend->pushUpdates(_backend->wrapUpdates({
+		MTP_updateGroupCall(
+			MTP_flags(MTPDupdateGroupCall::Flag::f_peer),
+			_backend->peerToMTP(*chat),
+			MTP_groupCallDiscarded(
+				MTP_long(group->id),
+				MTP_long(group->accessHash),
+				MTP_int(std::max(
+					int(base::unixtime::now() - group->date),
+					0)))),
+	}, {}, { chatId }));
+}
+
 // Watching for incoming calls.
 
 void CallManager::connectSocket() {
@@ -681,6 +1353,7 @@ void CallManager::refreshCalls() {
 }
 
 void CallManager::applyCalls(const std::vector<ActiveCall> &calls) {
+	applyGroupCalls(calls);
 	const auto self = _backend->_selfId;
 	if (_call && !_call->outgoing && _call->state == OneToOne::State::Ringing) {
 		const auto i = ranges::find(calls, _call->chatId, &ActiveCall::chatId);

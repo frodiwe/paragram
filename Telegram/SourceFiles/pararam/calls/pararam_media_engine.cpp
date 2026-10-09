@@ -248,6 +248,10 @@ public:
 	void setVideoCapture(
 		std::shared_ptr<tgcalls::VideoCaptureInterface> capture);
 	void videoCaptureUpdated();
+	void setVideoSource(
+		std::function<webrtc::scoped_refptr<
+			webrtc::VideoTrackSourceInterface>()> getSource,
+		bool screen);
 	void setVideoSink(
 		int64_t userId,
 		std::weak_ptr<rtc::VideoSinkInterface<webrtc::VideoFrame>> sink);
@@ -300,6 +304,9 @@ private:
 	webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> _video;
 	webrtc::scoped_refptr<webrtc::VideoTrackInterface> _videoTrack;
 	std::shared_ptr<tgcalls::VideoCaptureInterface> _videoCapture;
+	std::function<webrtc::scoped_refptr<
+		webrtc::VideoTrackSourceInterface>()> _getVideoSource;
+	bool _getVideoSourceScreen = false;
 	bool _videoScreen = false;
 	std::unique_ptr<Peer> _choirmaster;
 	std::map<int64_t, std::unique_ptr<Peer>> _peers;
@@ -885,12 +892,26 @@ void EngineInternal::videoCaptureUpdated() {
 	applyOutgoingVideo();
 }
 
+void EngineInternal::setVideoSource(
+		std::function<webrtc::scoped_refptr<
+			webrtc::VideoTrackSourceInterface>()> getSource,
+		bool screen) {
+	_getVideoSource = std::move(getSource);
+	_getVideoSourceScreen = screen;
+	applyOutgoingVideo();
+}
+
 void EngineInternal::applyOutgoingVideo() {
 	if (!_video || !_factory) {
 		return;
 	}
 	const auto object = CaptureObject(_videoCapture.get());
-	if (!object) {
+	auto source = object
+		? object->source()
+		: _getVideoSource
+		? _getVideoSource()
+		: webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface>();
+	if (!source) {
 		if (_videoTrack) {
 			_video->sender()->SetTrack(nullptr);
 			_videoTrack = nullptr;
@@ -898,8 +919,10 @@ void EngineInternal::applyOutgoingVideo() {
 		}
 		return;
 	}
-	const auto screen = object->isScreenCapture();
-	_videoTrack = _factory->CreateVideoTrack(object->source(), "video0");
+	const auto screen = object
+		? object->isScreenCapture()
+		: _getVideoSourceScreen;
+	_videoTrack = _factory->CreateVideoTrack(source, "video0");
 	_video->sender()->SetTrack(_videoTrack.get());
 
 	auto parameters = _video->sender()->GetParameters();
@@ -1015,6 +1038,15 @@ void Engine::setVideoCapture(
 void Engine::videoCaptureUpdated() {
 	_internal->perform([](EngineInternal *internal) {
 		internal->videoCaptureUpdated();
+	});
+}
+
+void Engine::setVideoSource(
+		std::function<webrtc::scoped_refptr<
+			webrtc::VideoTrackSourceInterface>()> getSource,
+		bool screen) {
+	_internal->perform([=](EngineInternal *internal) {
+		internal->setVideoSource(getSource, screen);
 	});
 }
 

@@ -1508,6 +1508,12 @@ MTPChat Backend::chatToMTP(const Chat &chat) const {
 		| Flag::f_participants_count
 		| Flag::f_default_banned_rights;
 	const auto admin = isAdmin(chat);
+	if (_calls && _calls->groupCallActive(chat.info.id)) {
+		flags |= Flag::f_call_active;
+		if (_calls->groupCallNotEmpty(chat.info.id)) {
+			flags |= Flag::f_call_not_empty;
+		}
+	}
 	if (!chat.joined) {
 		flags |= Flag::f_left;
 	} else if (chat.info.authorId == _selfId) {
@@ -4145,6 +4151,9 @@ void Backend::getFullChannel(mtpRequestId requestId, Reader &reader) {
 		if (pinned) {
 			flags |= Flag::f_pinned_msg_id;
 		}
+		if (_calls->groupCallActive(chatId)) {
+			flags |= Flag::f_call;
+		}
 		const auto top = topPost(*chat);
 		const auto unread = unreadCount(*chat);
 		auto users = members;
@@ -4180,7 +4189,7 @@ void Backend::getFullChannel(mtpRequestId requestId, Reader &reader) {
 				MTPint(), // slowmode_next_send_date
 				MTPint(), // stats_dc
 				MTP_int(chat->pts),
-				MTPInputGroupCall(),
+				_calls->groupCallInput(chatId),
 				MTPint(), // ttl_period
 				MTPVector<MTPstring>(), // pending_suggestions
 				MTPPeer(), // groupcall_default_join_as
@@ -4817,5 +4826,17 @@ template void Backend::reply<MTPphone_phoneCall>(
 template void Backend::reply<MTPUpdates>(
 	mtpRequestId,
 	const MTPUpdates&);
+template void Backend::reply<MTPphone_groupCall>(
+	mtpRequestId,
+	const MTPphone_groupCall&);
+template void Backend::reply<MTPphone_groupParticipants>(
+	mtpRequestId,
+	const MTPphone_groupParticipants&);
+template void Backend::reply<MTPphone_joinAsPeers>(
+	mtpRequestId,
+	const MTPphone_joinAsPeers&);
+template void Backend::reply<MTPVector<MTPint>>(
+	mtpRequestId,
+	const MTPVector<MTPint>&);
 
 } // namespace Pararam

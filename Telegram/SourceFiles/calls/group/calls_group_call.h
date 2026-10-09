@@ -19,6 +19,7 @@ class History;
 
 namespace tgcalls {
 class GroupInstanceCustomImpl;
+class GroupInstanceInterface;
 struct GroupLevelsUpdate;
 struct GroupNetworkState;
 struct GroupParticipantDescription;
@@ -748,7 +749,7 @@ private:
 		= InstanceState::Disconnected;
 	bool _instanceTransitioning = false;
 	InstanceMode _instanceMode = InstanceMode::None;
-	std::unique_ptr<tgcalls::GroupInstanceCustomImpl> _instance;
+	std::unique_ptr<tgcalls::GroupInstanceInterface> _instance;
 	base::has_weak_ptr _instanceGuard;
 	std::shared_ptr<tgcalls::VideoCaptureInterface> _cameraCapture;
 	rpl::variable<Webrtc::VideoState> _cameraState;

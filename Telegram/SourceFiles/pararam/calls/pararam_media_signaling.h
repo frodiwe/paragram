@@ -22,6 +22,34 @@ namespace Pararam::Media {
 // The media server pseudo user, see CallSession.
 inline constexpr auto kChoirmasterId = int64_t(14548);
 
+// Telegram group calls identify participants by audio "sources" and
+// video "endpoints", pararam.io by user ids. Others get sources from
+// [1, 0x20000000), their video from [0x20000000, 0x40000000), our own
+// source is random in [0x60000000, 0x80000000).
+[[nodiscard]] inline uint32_t AudioSourceFor(int64_t userId) {
+	return uint32_t(userId % 0x1FFFFFFF) + 1;
+}
+[[nodiscard]] inline uint32_t VideoSourceFor(int64_t userId) {
+	return AudioSourceFor(userId) + 0x20000000;
+}
+[[nodiscard]] inline std::string EndpointFor(int64_t userId) {
+	return "u" + std::to_string(userId);
+}
+[[nodiscard]] inline int64_t UserFromEndpoint(const std::string &endpoint) {
+	if (endpoint.size() < 2 || endpoint[0] != 'u') {
+		return 0;
+	}
+	auto result = int64_t();
+	for (auto i = size_t(1); i != endpoint.size(); ++i) {
+		const auto c = endpoint[i];
+		if (c < '0' || c > '9') {
+			return 0;
+		}
+		result = result * 10 + (c - '0');
+	}
+	return result;
+}
+
 struct Participant {
 	int64_t id = 0;
 	bool audio = false;
