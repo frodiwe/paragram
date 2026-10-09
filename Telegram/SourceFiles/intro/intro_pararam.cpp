@@ -21,6 +21,11 @@ namespace details {
 namespace {
 
 constexpr auto kFieldSkip = 56;
+constexpr auto kErrorSkip = 8;
+
+[[nodiscard]] TextWithEntities CredentialsDescription() {
+	return { u"Enter your pararam.io email and password."_q };
+}
 
 } // namespace
 
@@ -33,9 +38,7 @@ PararamLoginWidget::PararamLoginWidget(
 , _password(this, st::introPassword, rpl::single(u"Password"_q))
 , _code(this, st::introPassword, rpl::single(u"Two-factor code"_q)) {
 	setTitleText(rpl::single(u"Sign in to pararam.io"_q));
-	setDescriptionText(rpl::single(TextWithEntities{
-		u"Enter the email and the password of your pararam.io account."_q,
-	}));
+	setDescriptionText(rpl::single(CredentialsDescription()));
 
 	_email->changes(
 	) | rpl::on_next([=] {
@@ -45,6 +48,20 @@ PararamLoginWidget::PararamLoginWidget(
 	_code->changes(
 	) | rpl::on_next([=] {
 		hideError();
+	}, _code->lifetime());
+
+	// Ui::InputField handles Enter itself instead of passing it on.
+	_email->submits(
+	) | rpl::on_next([=] {
+		if (_password->getLastText().isEmpty()) {
+			_password->setFocusFast();
+		} else {
+			submit();
+		}
+	}, _email->lifetime());
+	_code->submits(
+	) | rpl::on_next([=] {
+		submit();
 	}, _code->lifetime());
 
 	_code->hide();
@@ -57,14 +74,18 @@ void PararamLoginWidget::resizeEvent(QResizeEvent *e) {
 }
 
 void PararamLoginWidget::updateControlsGeometry() {
-	const auto top = contentTop() + st::introPasswordTop;
+	// The two-factor code replaces the email and password fields.
+	const auto top = contentTop() + st::introStepFieldTop;
 	_email->moveToLeft(contentLeft(), top);
 	_password->moveToLeft(contentLeft(), top + kFieldSkip);
-	_code->moveToLeft(contentLeft(), top + 2 * kFieldSkip);
+	_code->moveToLeft(contentLeft(), top);
 }
 
 int PararamLoginWidget::errorTop() const {
-	return contentTop() + st::introErrorTop + (_codeShown ? kFieldSkip : 0);
+	return contentTop()
+		+ st::introStepFieldTop
+		+ (_codeShown ? 1 : 2) * kFieldSkip
+		+ kErrorSkip;
 }
 
 void PararamLoginWidget::setInnerFocus() {
@@ -79,27 +100,32 @@ void PararamLoginWidget::setInnerFocus() {
 
 void PararamLoginWidget::activate() {
 	Step::activate();
-	_email->show();
-	_password->show();
-	if (_codeShown) {
-		_code->show();
-	}
+	_email->setVisible(!_codeShown);
+	_password->setVisible(!_codeShown);
+	_code->setVisible(_codeShown);
 	setInnerFocus();
 }
 
 void PararamLoginWidget::cancelled() {
 	++_attempt;
 	_sent = false;
+	if (_codeShown) {
+		_codeShown = false;
+		_code->hide();
+		_code->clear();
+		setDescriptionText(rpl::single(CredentialsDescription()));
+	}
 }
 
 void PararamLoginWidget::showCodeField() {
 	_codeShown = true;
+	_email->hide();
+	_password->hide();
 	_code->show();
 	updateControlsGeometry();
 	_code->setFocusFast();
 	setDescriptionText(rpl::single(TextWithEntities{
-		u"Two-factor authentication is enabled for this account. "
-		"Enter the code from your authenticator app."_q,
+		u"Enter the code from your authenticator app."_q,
 	}));
 }
 

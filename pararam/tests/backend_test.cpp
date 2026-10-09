@@ -227,6 +227,14 @@ int main(int argc, char *argv[]) {
 		Wait([&] { return status.has_value(); });
 		CHECK(status == Pararam::LoginResult::Status::NeedTwoFactorCode);
 		status = std::nullopt;
+		Backend->login(u"bob@example.com"_q, u"password"_q, u"111111"_q, [&](
+				Pararam::LoginResult result,
+				MTPUser) {
+			status = result.status;
+		});
+		Wait([&] { return status.has_value(); });
+		CHECK(status == Pararam::LoginResult::Status::Failed);
+		status = std::nullopt;
 		auto self = MTPUser();
 		Backend->login(u"bob@example.com"_q, u"password"_q, u"123456"_q, [&](
 				Pararam::LoginResult result,

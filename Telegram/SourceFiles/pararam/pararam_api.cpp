@@ -608,7 +608,7 @@ void Api::loginStep(
 			post(u"/auth/totp"_q, codeBody, [=](const QJsonValue &) {
 				loginFinish(true, done);
 			}, [=](const HttpError &error) {
-				failed(error.type == u"HTTP_400"_q
+				failed((error.status >= 400 && error.status < 500)
 					? u"Wrong two-factor authentication code."_q
 					: error.message);
 			});
