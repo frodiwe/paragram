@@ -32,6 +32,15 @@ jobs:
         with:
           submodules: recursive
 
+      # The Debug build of Telegram Desktop needs more memory than the
+      # runner has (C1060 "compiler is out of heap space") without this.
+      - name: Page file.
+        uses: al-cheb/configure-pagefile-action@v1.4
+        with:
+          minimum-size: 16GB
+          maximum-size: 32GB
+          disk-root: "D:"
+
       - name: Prepare directories.
         run: |
           for %%I in ("%GITHUB_WORKSPACE%") do set REPO_NAME=%%~nxI
@@ -143,6 +152,9 @@ jobs:
       - name: Pararam Desktop build.
         if: steps.budget.outputs.build == 'true'
         run: |
+          rem The object files do not fit on C:, keep them on D:.
+          mkdir D:\out
+          mklink /J %TBUILD%\%REPO_NAME%\out D:\out
           cd /d %TBUILD%\%REPO_NAME%\Telegram
 
           call configure.bat ^
