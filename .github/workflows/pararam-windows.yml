@@ -128,8 +128,9 @@ jobs:
           ELAPSED=$(( ($(date +%s) - LIBS_STARTED) / 60 ))
           echo "Libraries took $ELAPSED minutes."
           if [ "${{ steps.libs.outcome }}" != "success" ]; then
-            echo "::warning::Libraries are not complete yet, re-run the workflow to continue building them."
+            echo "::error::Libraries failed or timed out, see the Libraries step. Progress is cached, re-run the workflow to continue."
             echo "build=false" >> $GITHUB_OUTPUT
+            exit 1
           elif [ $ELAPSED -gt 120 ]; then
             echo "::warning::Libraries are built and cached now, re-run the workflow to build Pararam Desktop."
             echo "build=false" >> $GITHUB_OUTPUT
@@ -140,7 +141,7 @@ jobs:
       - name: Pararam Desktop build.
         if: steps.budget.outputs.build == 'true'
         run: |
-          cd %TBUILD%\%REPO_NAME%\Telegram
+          cd /d %TBUILD%\%REPO_NAME%\Telegram
 
           call configure.bat ^
           x64 ^
