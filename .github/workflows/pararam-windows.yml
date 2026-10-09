@@ -138,6 +138,8 @@ jobs:
             echo "build=true" >> $GITHUB_OUTPUT
           fi
 
+      # The libraries are built in Debug only (skip-release), like in the
+      # upstream Telegram workflow, so the app is built in Debug too.
       - name: Pararam Desktop build.
         if: steps.budget.outputs.build == 'true'
         run: |
@@ -147,17 +149,17 @@ jobs:
           x64 ^
           qt6 ^
           -D TDESKTOP_API_TEST=ON ^
-          -D CMAKE_CONFIGURATION_TYPES=Release ^
+          -D CMAKE_CONFIGURATION_TYPES=Debug ^
           -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT= ^
           -D DESKTOP_APP_DISABLE_AUTOUPDATE=ON ^
           -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON
 
-          cmake --build ..\out --config Release --parallel
+          cmake --build ..\out --config Debug --parallel
 
       - name: Package.
         if: steps.budget.outputs.build == 'true'
         run: |
-          set OUT=%TBUILD%\%REPO_NAME%\out\Release
+          set OUT=%TBUILD%\%REPO_NAME%\out\Debug
           mkdir artifact
           copy %OUT%\Telegram.exe artifact\Pararam.exe
           copy %TBUILD%\%REPO_NAME%\pararam\README.md artifact\README.md
