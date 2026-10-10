@@ -226,8 +226,24 @@ Reactions Reactions::Parse(const QJsonValue &value) {
 	const auto object = value.toObject();
 	for (auto i = object.begin(); i != object.end(); ++i) {
 		auto users = JsonIds(i.value());
-		if (!users.empty()) {
-			result.list.emplace_back(i.key(), std::move(users));
+		if (users.empty()) {
+			continue;
+		}
+		// The same reaction may come with or without U+FE0F.
+		const auto emoji = PararamReaction(i.key());
+		const auto j = std::find_if(
+			result.list.begin(),
+			result.list.end(),
+			[&](const auto &entry) { return entry.first == emoji; });
+		if (j == result.list.end()) {
+			result.list.emplace_back(emoji, std::move(users));
+		} else {
+			for (const auto id : users) {
+				if (std::find(j->second.begin(), j->second.end(), id)
+					== j->second.end()) {
+					j->second.push_back(id);
+				}
+			}
 		}
 	}
 	// Keep the picker order, so that the list is stable between updates.
@@ -339,13 +355,35 @@ const std::vector<ReactionKind> &ReactionKinds() {
 }
 
 int ReactionIndex(const QString &emoji) {
+	const auto strip = [](QString value) {
+		return value.remove(QChar(0xFE0F));
+	};
+	const auto wanted = strip(emoji);
 	const auto &list = ReactionKinds();
 	for (auto i = 0, count = int(list.size()); i != count; ++i) {
-		if (emoji == QString::fromUtf16(list[i].emoji)) {
+		if (wanted == strip(QString::fromUtf16(list[i].emoji))) {
 			return i;
 		}
 	}
 	return -1;
+}
+
+QString PararamReaction(const QString &emoji) {
+	const auto index = ReactionIndex(emoji);
+	return (index >= 0)
+		? QString::fromUtf16(ReactionKinds()[index].emoji)
+		: emoji;
+}
+
+QString StandardReaction(const QString &emoji) {
+	// pararam.io uses the text style U+2714 and U+2764, the standard
+	// (fully qualified) emoji have U+FE0F after them.
+	const auto value = PararamReaction(emoji);
+	if (value.size() == 1
+		&& (value[0] == QChar(0x2714) || value[0] == QChar(0x2764))) {
+		return value + QChar(0xFE0F);
+	}
+	return value;
 }
 
 PostInfo PostInfo::Parse(const QJsonObject &object) {

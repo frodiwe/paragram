@@ -194,6 +194,17 @@ int main(int argc, char *argv[]) {
 		CHECK(!(reactions == post.reactions));
 		CHECK(ReactionKinds().size() == 47);
 		CHECK(ReactionIndex(u"\u2764"_q) >= 0);
+		// Standard emoji in the client, pararam.io characters on the server.
+		CHECK(ReactionIndex(u"\u2764\uFE0F"_q) == ReactionIndex(u"\u2764"_q));
+		CHECK(StandardReaction(u"\u2714"_q) == u"\u2714\uFE0F"_q);
+		CHECK(StandardReaction(u"\u2764"_q) == u"\u2764\uFE0F"_q);
+		CHECK(StandardReaction(u"\U0001F44D"_q) == u"\U0001F44D"_q);
+		CHECK(PararamReaction(u"\u2714\uFE0F"_q) == u"\u2714"_q);
+		CHECK(PararamReaction(u"\u26A0"_q) == u"\u26A0\uFE0F"_q);
+		const auto both = Reactions::Parse(QJsonValue(Json(R"({
+			"\u2764": [3], "\u2764\ufe0f": [4]})")));
+		CHECK(both.list.size() == 1 && both.count() == 2);
+		CHECK(!both.list.empty() && both.list[0].first == u"\u2764"_q);
 	}
 	// Image types by name, HEIC needs the server side conversion.
 	{

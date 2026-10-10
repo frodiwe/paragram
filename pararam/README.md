@@ -186,8 +186,9 @@ The pararam.io endpoints are the ones used by the official Python client
   server side resized preview (`?s=400`) when that fails (HEIC, large
   metadata). Images whose size cannot be read either way are shown as files.
 * GIFs are shown as still photos.
-* Reaction icons are drawn from the emoji set of the client, not the
-  pararam.io icons.
+* Reactions are shown as the standard emoji of the client's emoji set
+  (pararam.io's text style ✔ and ❤ become ✔️ and ❤️ and are mapped back
+  when sending), not as the pararam.io icons.
 * Muting a chat is stored locally (per account), not on pararam.io.
 * Calls were built from the pararam.io web client and tested against a mock
   media server only; the details of the real media server may need tuning.

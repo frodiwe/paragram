@@ -81,7 +81,7 @@ base::flat_map<const MTP::Instance*, Backend*> &Registry() {
 }
 
 [[nodiscard]] MTPReaction ReactionToMTP(const QString &emoji) {
-	return MTP_reactionEmoji(MTP_string(emoji));
+	return MTP_reactionEmoji(MTP_string(StandardReaction(emoji)));
 }
 
 [[nodiscard]] QSize FitPreview(QSize size) {
@@ -1059,7 +1059,8 @@ void Backend::replyAppConfig(mtpRequestId requestId) {
 		MTP_vector<MTPJSONObjectValue>({
 			value(u"_"_q, MTP_jsonString(MTP_string("reactionEmoji"))),
 			value(u"emoticon"_q, MTP_jsonString(MTP_string(
-				QString::fromUtf16(ReactionKinds().front().emoji)))),
+				StandardReaction(
+					QString::fromUtf16(ReactionKinds().front().emoji))))),
 		}))));
 	reply(requestId, MTP_help_appConfig(
 		MTP_int(1),
@@ -2226,7 +2227,8 @@ MTPDocument Backend::reactionDocument(int index) {
 	if (_generatedFiles.empty()) {
 		auto emoji = std::vector<QString>();
 		for (const auto &kind : kinds) {
-			emoji.push_back(QString::fromUtf16(kind.emoji));
+			emoji.push_back(
+				StandardReaction(QString::fromUtf16(kind.emoji)));
 		}
 		const auto icons = RenderReactionIcons(emoji);
 		for (auto i = 0, count = int(icons.size()); i != count; ++i) {
@@ -2241,7 +2243,8 @@ MTPDocument Backend::reactionDocument(int index) {
 		MTP_int(kReactionIconSize)));
 	attributes.push_back(MTP_documentAttributeSticker(
 		MTP_flags(0),
-		MTP_string(QString::fromUtf16(kinds[index].emoji)),
+		MTP_string(
+			StandardReaction(QString::fromUtf16(kinds[index].emoji))),
 		MTP_inputStickerSetEmpty(),
 		MTPMaskCoords()));
 	attributes.push_back(MTP_documentAttributeFilename(
@@ -2270,7 +2273,8 @@ MTPmessages_AvailableReactions Backend::availableReactions() {
 		}
 		list.push_back(MTP_availableReaction(
 			MTP_flags(0),
-			MTP_string(QString::fromUtf16(kinds[i].emoji)),
+			MTP_string(
+				StandardReaction(QString::fromUtf16(kinds[i].emoji))),
 			MTP_string(QString::fromUtf8(kinds[i].title)),
 			document, // static_icon
 			document, // appear_animation
@@ -5191,7 +5195,7 @@ void Backend::sendReaction(mtpRequestId requestId, Reader &reader) {
 	for (const auto &reaction : list.v) {
 		reaction.match([&](const MTPDreactionEmoji &data) {
 			if (wanted.isEmpty()) {
-				wanted = qs(data.vemoticon());
+				wanted = PararamReaction(qs(data.vemoticon()));
 			}
 		}, [](const auto &) {
 		});
@@ -5237,7 +5241,8 @@ void Backend::sendReaction(mtpRequestId requestId, Reader &reader) {
 				if (i != end(chat->posts)) {
 					const auto object = result.toObject();
 					const auto mine = object.contains(u"my_reaction"_q)
-						? JsonString(object, u"my_reaction"_q)
+						? PararamReaction(
+							JsonString(object, u"my_reaction"_q))
 						: wanted;
 					i->second.reactions.set(_selfId, mine);
 				}
@@ -5317,7 +5322,7 @@ void Backend::getMessageReactionsList(
 	auto only = QString();
 	if (filter) {
 		filter->match([&](const MTPDreactionEmoji &data) {
-			only = qs(data.vemoticon());
+			only = PararamReaction(qs(data.vemoticon()));
 		}, [](const auto &) {
 		});
 	}

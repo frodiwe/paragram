@@ -585,6 +585,9 @@ int main(int argc, char *argv[]) {
 		if (available->type() == mtpc_messages_availableReactions) {
 			const auto &list = available->c_messages_availableReactions().vreactions().v;
 			CHECK(list.size() == 47);
+			// Standard fully qualified emoji, pararam.io sends U+2714 alone.
+			CHECK(list.size() > 2
+				&& qs(list[2].c_availableReaction().vreaction()) == u"\u2714\uFE0F"_q);
 			if (!list.isEmpty()) {
 				const auto &icon = list[0].c_availableReaction().vstatic_icon();
 				const auto file = Call<MTPupload_File>(MTPupload_GetFile(
@@ -637,6 +640,15 @@ int main(int argc, char *argv[]) {
 		if (const auto result = react(QString(), "messages.sendReaction (remove)")) {
 			const auto counts = reactionsIn(*result);
 			CHECK(counts.contains(fire) && counts.at(fire) == std::make_pair(1, false));
+		}
+		// The standard heart is sent to pararam.io as its U+2764.
+		const auto heart = u"\u2764\uFE0F"_q;
+		if (const auto result = react(heart, "messages.sendReaction (heart)")) {
+			const auto counts = reactionsIn(*result);
+			CHECK(counts.contains(heart) && counts.at(heart) == std::make_pair(1, true));
+		}
+		if (const auto result = react(QString(), "messages.sendReaction (remove heart)")) {
+			CHECK(!reactionsIn(*result).contains(heart));
 		}
 		Mock(u"/_mock/react"_q, QByteArray(R"({"chat_id": 11, "post_no": 6, "user_id": 3, "reaction": ")")
 			+ joy.toUtf8() + "\"}");

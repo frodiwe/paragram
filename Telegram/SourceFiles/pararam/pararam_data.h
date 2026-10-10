@@ -85,6 +85,11 @@ struct ReactionKind {
 [[nodiscard]] const std::vector<ReactionKind> &ReactionKinds();
 [[nodiscard]] int ReactionIndex(const QString &emoji);
 
+// Reactions are kept as pararam.io sends them and shown in the client as
+// the standard fully qualified emoji, both ignoring U+FE0F differences.
+[[nodiscard]] QString PararamReaction(const QString &emoji);
+[[nodiscard]] QString StandardReaction(const QString &emoji);
+
 struct TextPart {
 	QString type;
 	QString value;
