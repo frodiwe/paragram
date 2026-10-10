@@ -39,6 +39,7 @@ in-process by a translation layer that calls the pararam.io REST API.
 | Images (JPEG, PNG, GIF, WebP, AVIF, HEIC) | Inline photos, server side resized previews |
 | Reactions (one per user, 47 kinds) | Message reactions (add, change, remove, who reacted) |
 | Read marks                         | Read / unread state and counters          |
+| Who read (`/msg/lastread`, `/activity/who-read`) | Double check marks, "Seen by" list in groups, read time in private chats |
 | New posts, edits, deletions, reactions | Live updates (polling plus the main socket's `post_edit`) |
 | Members                            | Group members list                        |
 | Users / chats search               | Global search                             |
@@ -194,8 +195,9 @@ The pararam.io endpoints are the ones used by the official Python client
   media server only; the details of the real media server may need tuning.
 * Screen sharing in video chats (group calls) is not supported yet, in
   private calls the screen replaces the camera like on pararam.io.
-* Outgoing messages show a single check mark: pararam.io does not report
-  per-chat read receipts.
+* Read marks of private chats update live (main socket), the ones of
+  groups are refreshed every 15 seconds while the chat is open or when
+  it changes.
 * Forwarded messages are sent as copies with a "Forwarded from" line.
 * Live updates use polling, so they arrive with a delay of up to ~3 seconds.
 * Edits and deletions of old posts (beyond the last 30 of a chat) are only

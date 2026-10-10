@@ -61,6 +61,9 @@ constexpr auto kAvatarSmall = 200;
 constexpr auto kAvatarLarge = 400;
 constexpr auto kReactionDocumentBase = uint64(0x7FFFFFFF00000000ULL);
 constexpr auto kMaxRecentReactions = 50;
+constexpr auto kReadOutboxCheckInterval = crl::time(15000);
+constexpr auto kReadMarkExpirePeriod = 10 * 365 * 86400;
+constexpr auto kReadMarkSizeThreshold = 1000;
 
 base::flat_map<const MTP::Instance*, Backend*> &Registry() {
 	static auto result = base::flat_map<const MTP::Instance*, Backend*>();
@@ -846,6 +849,12 @@ void Backend::dispatch(
 	case mtpc_messages_getMessageReactionsList:
 		return getMessageReactionsList(requestId, reader);
 
+	// Read receipts.
+	case mtpc_messages_getMessageReadParticipants:
+		return getMessageReadParticipants(requestId, reader);
+	case mtpc_messages_getOutboxReadDate:
+		return getOutboxReadDate(requestId, reader);
+
 	// Files.
 	case mtpc_upload_getFile: return getFile(requestId, reader);
 	case mtpc_photos_getUserPhotos: return getUserPhotos(requestId, reader);
@@ -1052,6 +1061,16 @@ void Backend::replyAppConfig(mtpRequestId requestId) {
 		return MTP_jsonNumber(MTP_double(value));
 	};
 	const auto count = int(ReactionKinds().size());
+	// Who read: pararam.io keeps it for all posts of all chats.
+	values.push_back(value(
+		u"chat_read_mark_expire_period"_q,
+		number(kReadMarkExpirePeriod)));
+	values.push_back(value(
+		u"pm_read_date_expire_period"_q,
+		number(kReadMarkExpirePeriod)));
+	values.push_back(value(
+		u"chat_read_mark_size_threshold"_q,
+		number(kReadMarkSizeThreshold)));
 	values.push_back(value(u"reactions_user_max_default"_q, number(1)));
 	values.push_back(value(u"reactions_user_max_premium"_q, number(1)));
 	values.push_back(value(u"reactions_uniq_max"_q, number(count)));
@@ -1111,6 +1130,13 @@ void Backend::ensureLoaded(Done done, Fail fail) {
 		}
 		schedulePoll(kPollInterval);
 		_calls->start();
+		auto waiting = std::vector<int64>();
+		for (const auto &[id, chat] : _chats) {
+			if (waitsForRead(*chat)) {
+				waiting.push_back(id);
+			}
+		}
+		refreshReadOutboxes(std::move(waiting));
 	}, failed);
 }
 
@@ -1914,7 +1940,7 @@ MTPDialog Backend::dialogToMTP(const Chat &chat) const {
 		peerToMTP(chat),
 		MTP_int(top ? msgId(chat, top->postNo) : 0),
 		MTP_int(msgId(chat, readInbox)),
-		MTP_int(0), // read_outbox_max_id: pararam has no read receipts.
+		MTP_int(chat.readOutbox ? msgId(chat, chat.readOutbox) : 0),
 		MTP_int(unread),
 		MTP_int(0), // unread_mentions_count
 		MTP_int(0), // unread_reactions_count
@@ -2674,6 +2700,9 @@ void Backend::applySync(const QJsonObject &result) {
 				} else {
 					refreshChat(id, postsCount, lastRead);
 				}
+				if (waitsForRead(*chat)) {
+					refreshReadOutbox(id);
+				}
 			}
 			if (!channels.isEmpty()) {
 				pushUpdates(wrapUpdates(channels, {}, chats));
@@ -2895,6 +2924,126 @@ void Backend::postEdited(int64 chatId, int postNo) {
 	fetchPosts(chatId, postNo, postNo, finish, [](const HttpError &) {});
 }
 
+bool Backend::waitsForRead(const Chat &chat) const {
+	// Only the own posts show read marks.
+	auto checked = 0;
+	for (auto i = chat.posts.rbegin()
+		; i != chat.posts.rend() && checked < 50
+		; ++i, ++checked) {
+		if (i->first <= chat.readOutbox) {
+			return false;
+		} else if (!i->second.deleted
+			&& !i->second.isService()
+			&& i->second.userId == _selfId) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void Backend::refreshReadOutbox(int64 chatId, bool force, Done done) {
+	const auto chat = chatById(chatId);
+	const auto now = crl::now();
+	if (!chat
+		|| chat->readOutboxLoading
+		|| (!force
+			&& chat->readOutboxChecked
+			&& now - chat->readOutboxChecked < kReadOutboxCheckInterval)) {
+		if (done) {
+			done();
+		}
+		return;
+	}
+	chat->readOutboxLoading = true;
+	chat->readOutboxChecked = now;
+	const auto finish = [=](int postNo) {
+		if (const auto chat = chatById(chatId)) {
+			chat->readOutboxLoading = false;
+			if (postNo > 0) {
+				applyReadOutbox(chatId, postNo);
+			}
+		}
+		if (done) {
+			done();
+		}
+	};
+	// { "<user id>": <last read post_no>, ... }
+	_api.get(u"/msg/lastread/%1"_q.arg(chatId), [=](const QJsonValue &v) {
+		const auto chat = chatById(chatId);
+		auto result = 0;
+		const auto object = v.toObject();
+		for (auto i = object.begin(); chat && i != object.end(); ++i) {
+			const auto userId = i.key().toLongLong();
+			if (userId
+				&& userId != _selfId
+				&& (!chat->info.pm || userId == chat->pmUserId)) {
+				result = std::max(result, int(JsonInt(i.value())));
+			}
+		}
+		finish(result);
+	}, [=](const HttpError &) {
+		finish(0);
+	});
+}
+
+void Backend::refreshReadOutboxes(std::vector<int64> chatIds) {
+	struct State {
+		std::vector<int64> queue;
+		int running = 0;
+	};
+	const auto state = std::make_shared<State>();
+	state->queue = std::move(chatIds);
+	const auto next = std::make_shared<Fn<void()>>();
+	*next = [=] {
+		while (state->running < kParallelRequests
+			&& !state->queue.empty()) {
+			const auto id = state->queue.back();
+			state->queue.pop_back();
+			const auto chat = chatById(id);
+			if (!chat || chat->readOutboxLoading) {
+				continue; // Would finish right away, inside this loop.
+			}
+			++state->running;
+			refreshReadOutbox(id, true, [=] {
+				--state->running;
+				(*next)();
+			});
+		}
+		if (!state->running && state->queue.empty()) {
+			*next = nullptr;
+		}
+	};
+	(*next)();
+}
+
+void Backend::applyReadOutbox(int64 chatId, int postNo) {
+	const auto chat = chatById(chatId);
+	if (!chat) {
+		return;
+	}
+	postNo = std::min(postNo, chat->info.postsCount);
+	if (postNo <= chat->readOutbox) {
+		return;
+	}
+	chat->readOutbox = postNo;
+	const auto maxId = MTP_int(msgId(*chat, postNo));
+	if (chat->info.pm) {
+		const auto pts = ++_commonPts;
+		auto update = MTP_updateReadHistoryOutbox(
+			peerToMTP(*chat),
+			maxId,
+			MTP_int(pts),
+			MTP_int(1));
+		logUpdate(nullptr, update, pts, 1, { chat->pmUserId });
+		pushUpdates(wrapUpdates({ update }, { chat->pmUserId }, {}));
+	} else {
+		pushUpdates(wrapUpdates(
+			{ MTP_updateReadChannelOutbox(MTP_long(chatId), maxId) },
+			{},
+			{ chatId }));
+	}
+}
+
 // Handlers.
 
 void Backend::updateNotifySettings(mtpRequestId requestId, Reader &reader) {
@@ -2991,6 +3140,9 @@ void Backend::getChannelDifference(mtpRequestId requestId, Reader &reader) {
 	}
 	// The UI polls the opened chats, use it to deliver news faster.
 	schedulePoll(kMinPollInterval);
+	if (waitsForRead(*chat)) {
+		refreshReadOutbox(chat->info.id);
+	}
 	if (pts >= chat->pts) {
 		reply(requestId, MTP_updates_channelDifferenceEmpty(
 			MTP_flags(EmptyFlag::f_final | EmptyFlag::f_timeout),
@@ -3525,6 +3677,7 @@ void Backend::getHistory(mtpRequestId requestId, Reader &reader) {
 			query->hi = hi;
 			query->limit = std::max(limit, 0);
 			loadHistory(requestId, query);
+			refreshReadOutbox(chat->info.id);
 		}, failer(requestId), false);
 	}, failer(requestId));
 }
@@ -4599,7 +4752,9 @@ void Backend::getFullChannel(mtpRequestId requestId, Reader &reader) {
 				MTP_int(unread
 					? chat->info.lastReadPostNo
 					: (top ? top->postNo : chat->info.lastReadPostNo)),
-				MTP_int(0), // read_outbox_max_id
+				MTP_int(chat->readOutbox
+					? msgId(*chat, chat->readOutbox)
+					: 0),
 				MTP_int(unread),
 				avatarPhoto(chatAvatarId(*chat), u"chat:%1"_q.arg(chatId)),
 				notifySettings(*chat),
@@ -5358,6 +5513,67 @@ void Backend::getMessageReactionsList(
 			usersToMTP(users),
 			MTPstring()));
 	});
+}
+
+void Backend::getMessageReadParticipants(
+		mtpRequestId requestId,
+		Reader &reader) {
+	const auto peer = reader.read<MTPInputPeer>();
+	const auto id = reader.int32Value();
+	const auto chat = reader.ok() ? chatByInputPeer(peer) : nullptr;
+	const auto number = chat ? postNo(*chat, id) : 0;
+	if (!chat || number <= 0) {
+		replyError(requestId, 400, u"MSG_ID_INVALID"_q);
+		return;
+	}
+	// { "<user id>": "<time read>", ... }
+	_api.get(
+		u"/activity/who-read?thread_id=%1&post_no=%2"_q
+			.arg(chat->info.id)
+			.arg(number),
+		[=](const QJsonValue &result) {
+			auto list = QVector<MTPReadParticipantDate>();
+			const auto object = result.toObject();
+			for (auto i = object.begin(); i != object.end(); ++i) {
+				const auto userId = i.key().toLongLong();
+				if (!userId || userId == _selfId) {
+					continue;
+				}
+				const auto date = ParseTime(i.value().toString());
+				list.push_back(MTP_readParticipantDate(
+					MTP_long(userId),
+					MTP_int(date ? date : Now())));
+			}
+			reply(requestId, MTP_vector<MTPReadParticipantDate>(list));
+		},
+		failer(requestId));
+}
+
+void Backend::getOutboxReadDate(mtpRequestId requestId, Reader &reader) {
+	const auto peer = reader.read<MTPInputPeer>();
+	const auto id = reader.int32Value();
+	const auto chat = reader.ok() ? chatByInputPeer(peer) : nullptr;
+	const auto number = chat ? postNo(*chat, id) : 0;
+	if (!chat || !chat->info.pm || number <= 0) {
+		replyError(requestId, 400, u"MSG_ID_INVALID"_q);
+		return;
+	}
+	const auto other = chat->pmUserId;
+	_api.get(
+		u"/activity/who-read?thread_id=%1&post_no=%2"_q
+			.arg(chat->info.id)
+			.arg(number),
+		[=](const QJsonValue &result) {
+			const auto object = result.toObject();
+			const auto value = object.value(QString::number(other));
+			if (value.isUndefined() || value.isNull()) {
+				replyError(requestId, 400, u"MESSAGE_NOT_READ_YET"_q);
+				return;
+			}
+			const auto date = ParseTime(value.toString());
+			reply(requestId, MTP_outboxReadDate(MTP_int(date ? date : Now())));
+		},
+		failer(requestId));
 }
 
 void Backend::getFile(mtpRequestId requestId, Reader &reader) {

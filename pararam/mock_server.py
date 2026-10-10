@@ -63,6 +63,7 @@ USERS = {
 CHATS = {}
 POSTS = {}  # chat_id -> {post_no: post}
 READ = {}  # (chat_id, user_id) -> last read post_no
+READ_AT = {}  # (chat_id, user_id) -> time of the last read
 FAVORITES = set()  # (chat_id, user_id)
 HIDDEN = set()  # (chat_id, user_id)
 TAGS = {}  # (user_id, tag) -> set of chat ids
@@ -210,6 +211,15 @@ def set_reaction(post, user_id, reaction):
     CHATS[post['chat_id']]['time_updated'] = now_iso()
     post_edited(post, user_id)
     return None if reaction == mine else reaction
+
+
+def mark_read(chat_id, user_id, post_no, notify=False):
+    READ[(chat_id, user_id)] = max(READ.get((chat_id, user_id), 0), post_no)
+    READ_AT[(chat_id, user_id)] = now_iso()
+    # The mock main socket is not per user, only others' reads are sent.
+    if notify and CHATS[chat_id]['pm'] and mock_calls is not None:
+        mock_calls.main_event('pm_thread_posts_was_read', {
+            'thread_id': chat_id, 'post_no': READ[(chat_id, user_id)]})
 
 
 def post_edited(post, user_id):
@@ -526,11 +536,22 @@ class Handler(BaseHTTPRequestHandler):
                 'uuid': post['uuid'], 'chat_id': cid, 'post_no': no,
                 'ver': post['ver']})
         match = re.fullmatch(r'/msg/lastread/(\d+)', path)
+        if match and method == 'GET':
+            cid = int(match.group(1))
+            return self.send_json(200, {
+                str(uid): READ.get((cid, uid), 0)
+                for uid in CHATS[cid]['thread_users']})
+        if path == '/activity/who-read':
+            cid, no = int(query['thread_id']), int(query['post_no'])
+            return self.send_json(200, {
+                str(uid): READ_AT.get((cid, uid), now_iso())
+                for uid in CHATS[cid]['thread_users']
+                if READ.get((cid, uid), 0) >= no})
         if match and method == 'POST':
             cid = int(match.group(1))
             body = self.json_body()
             no = len(POSTS[cid]) if body.get('read_all') else body['post_no']
-            READ[(cid, user_id)] = max(READ.get((cid, user_id), 0), no)
+            mark_read(cid, user_id, no)
             return self.send_json(200, {
                 'last_read_post_no': READ[(cid, user_id)],
                 'posts_count': len(POSTS[cid])})
@@ -781,6 +802,11 @@ class Handler(BaseHTTPRequestHandler):
                 for cid, posts in POSTS.items()})
         body = self.json_body()
         cid = int(body.get('chat_id', 0))
+        if path == '/_mock/read':
+            uid = int(body.get('user_id', 3))
+            no = int(body.get('post_no', len(POSTS[cid])))
+            mark_read(cid, uid, no, notify=True)
+            return self.send_json(200, {'last_read_post_no': no})
         if path == '/_mock/incoming':
             post = add_post(cid, int(body.get('user_id', 3)),
                             body.get('text', 'Incoming message'),

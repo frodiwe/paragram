@@ -112,6 +112,9 @@ private:
 		bool delivering = false;
 		bool deliverAgain = false;
 		bool checkingEdits = false;
+		int readOutbox = 0; // The last post read by somebody else.
+		crl::time readOutboxChecked = 0;
+		bool readOutboxLoading = false;
 	};
 
 	void sessionChanged();
@@ -275,6 +278,15 @@ private:
 	void checkEdits(int64 chatId);
 	void postEdited(int64 chatId, int postNo); // From the main socket.
 
+	// Read receipts, from /msg/lastread and the main socket.
+	void refreshReadOutbox(
+		int64 chatId,
+		bool force = false,
+		Done done = nullptr);
+	void refreshReadOutboxes(std::vector<int64> chatIds);
+	void applyReadOutbox(int64 chatId, int postNo);
+	[[nodiscard]] bool waitsForRead(const Chat &chat) const;
+
 	// Handlers.
 	void updateNotifySettings(mtpRequestId requestId, Reader &reader);
 	void getState(mtpRequestId requestId);
@@ -318,6 +330,8 @@ private:
 	void sendReaction(mtpRequestId requestId, Reader &reader);
 	void getMessagesReactions(mtpRequestId requestId, Reader &reader);
 	void getMessageReactionsList(mtpRequestId requestId, Reader &reader);
+	void getMessageReadParticipants(mtpRequestId requestId, Reader &reader);
+	void getOutboxReadDate(mtpRequestId requestId, Reader &reader);
 	void saveFilePart(mtpRequestId requestId, Reader &reader, bool big);
 
 	void createPost(

@@ -1278,6 +1278,12 @@ void CallManager::connectSocket() {
 			_backend->postEdited(
 				JsonInt(data, u"thread_id"_q),
 				int(JsonInt(data, u"in_thread_no"_q)));
+		} else if (type == u"pm_thread_posts_was_read"_q) {
+			// The other user of a private chat read the posts.
+			const auto data = message.value(u"data"_q).toObject();
+			_backend->applyReadOutbox(
+				JsonInt(data, u"thread_id"_q),
+				int(JsonInt(data, u"post_no"_q)));
 		} else if (type == u"unauthorized"_q) {
 			LOG(("Pararam: Main socket unauthorized."));
 			socket->close();

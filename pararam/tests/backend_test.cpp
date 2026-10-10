@@ -463,6 +463,35 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
+	// Read receipts: Carol read the private chat, all read Alice's post 3.
+	if (pmTopId) {
+		Wait([&] { return false; }, 1500); // /msg/lastread after loading.
+		if (const auto dialogs = Call<MTPmessages_PeerDialogs>(
+				MTPmessages_GetPeerDialogs(MTP_vector<MTPInputDialogPeer>(
+					1,
+					MTP_inputDialogPeer(User(3)))),
+				"messages.getPeerDialogs (read outbox)")) {
+			const auto &list = dialogs->c_messages_peerDialogs().vdialogs().v;
+			CHECK(list.size() == 1
+				&& list[0].c_dialog().vread_outbox_max_id().v == pmTopId);
+		}
+		if (const auto date = Call<MTPOutboxReadDate>(
+				MTPmessages_GetOutboxReadDate(User(3), MTP_int(pmTopId - 1)),
+				"messages.getOutboxReadDate")) {
+			CHECK(date->c_outboxReadDate().vdate().v > 0);
+		}
+	}
+	if (const auto read = Call<MTPVector<MTPReadParticipantDate>>(
+			MTPmessages_GetMessageReadParticipants(Channel(10), MTP_int(3)),
+			"messages.getMessageReadParticipants")) {
+		auto users = std::vector<int64>();
+		for (const auto &entry : read->v) {
+			users.push_back(entry.c_readParticipantDate().vuser_id().v);
+		}
+		ranges::sort(users);
+		CHECK(users == (std::vector<int64>{ 2, 3, 4 }));
+	}
+
 	// The file posted in General is a document.
 	auto documentId = uint64();
 	if (const auto page = history(Channel(10), 0, 0, 1, "messages.getHistory (file)")) {
