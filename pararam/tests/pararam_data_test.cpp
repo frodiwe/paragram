@@ -33,10 +33,18 @@ int main(int argc, char *argv[]) {
 	// Markdown and parsed parts to entities.
 	{
 		auto parsed = std::vector<TextPart>{
-			{ u"text"_q, u"Hi "_q },
-			{ u"mention"_q, u"@bob"_q, QString(), 2 },
-			{ u"text"_q, u", see "_q },
-			{ u"link"_q, u"https://pararam.io"_q, u"https://pararam.io"_q },
+			{ .type = u"text"_q, .value = u"Hi "_q },
+			{ .type = u"mention"_q, .value = u"@bob"_q, .userId = 2 },
+			{ .type = u"text"_q, .value = u", see "_q },
+			{
+				.type = u"link"_q,
+				.value = u"https://pararam.io"_q,
+				.link = u"https://pararam.io"_q,
+			},
+			{ .type = u"text"_q, .value = u" "_q },
+			{ .type = u"bold"_q, .value = u"now"_q },
+			{ .type = u"text"_q, .value = u" "_q },
+			{ .type = u"blockquote2"_q, .value = u"x"_q },
 		};
 		const auto result = ParseIncomingText(
 			u"Hi @bob, see https://pararam.io **now** `x`"_q,
@@ -50,6 +58,42 @@ int main(int argc, char *argv[]) {
 		CHECK(result.entities[2].type == Entity::Type::Bold);
 		CHECK(result.text.mid(result.entities[2].offset, result.entities[2].length) == u"now"_q);
 		CHECK(result.entities[3].type == Entity::Type::Code);
+	}
+	{
+		// Markdown links come as link parts with a title.
+		auto parsed = std::vector<TextPart>{
+			{ .type = u"text"_q, .value = u"Notes are in "_q },
+			{
+				.type = u"link"_q,
+				.value = u"[the notes](https://x.y/n)"_q,
+				.link = u"https://x.y/n"_q,
+				.title = u"the notes"_q,
+			},
+			{ .type = u"br"_q },
+			{ .type = u"strike"_q, .value = u"old"_q },
+			{ .type = u"tag"_q, .value = u"#tag"_q },
+		};
+		const auto result = ParseIncomingText(
+			u"Notes are in [the notes](https://x.y/n)\n~~old~~#tag"_q,
+			parsed);
+		CHECK(result.text == u"Notes are in the notes\nold#tag"_q);
+		CHECK(result.entities.size() == 3);
+		CHECK(result.entities[0].type == Entity::Type::TextUrl);
+		CHECK(result.entities[0].url == u"https://x.y/n"_q);
+		CHECK(result.text.mid(result.entities[0].offset, result.entities[0].length) == u"the notes"_q);
+		CHECK(result.entities[1].type == Entity::Type::Strike);
+		CHECK(result.entities[2].type == Entity::Type::Hashtag);
+	}
+	{
+		// Code blocks with a language.
+		auto parsed = std::vector<TextPart>{
+			{ .type = u"blockquote1"_q, .value = u"cpp\nint x;\n"_q, .lang = u"cpp"_q },
+		};
+		const auto result = ParseIncomingText(u"```cpp\nint x;\n```"_q, parsed);
+		CHECK(result.text == u"int x;"_q);
+		CHECK(result.entities.size() == 1
+			&& result.entities[0].type == Entity::Type::Pre
+			&& result.entities[0].url == u"cpp"_q);
 	}
 	{
 		const auto result = ParseIncomingText(
@@ -78,7 +122,7 @@ int main(int argc, char *argv[]) {
 			.url = u"https://x.y"_q,
 		});
 		CHECK(FormatOutgoingText(text)
-			== u"**bold** `code` link (https://x.y)"_q);
+			== u"**bold** `code` [link](https://x.y)"_q);
 	}
 	{
 		auto text = FormattedText{ u"ab"_q };
@@ -130,6 +174,38 @@ int main(int argc, char *argv[]) {
 		CHECK(post.file.valid() && post.file.isImage());
 		CHECK(post.attachments.size() == 1);
 		CHECK(post.isService() && post.eventType == u"CHAT_TITLE"_q);
+	}
+	// Reactions, one per user.
+	{
+		const auto post = PostInfo::Parse(Json(R"({
+			"post_no": 5, "chat_id": 10, "user_id": 3, "text": "x",
+			"meta": {"reactions": {"\ud83d\udd25": [4], "\ud83d\udc4d": [3, 4]}}
+		})"));
+		auto reactions = post.reactions;
+		CHECK(reactions.list.size() == 2);
+		CHECK(!reactions.list.empty() && reactions.list[0].first == u"\U0001F44D"_q);
+		CHECK(reactions.count() == 3);
+		CHECK(reactions.of(3) == u"\U0001F44D"_q);
+		reactions.set(3, u"\U0001F525"_q);
+		CHECK(reactions.of(3) == u"\U0001F525"_q);
+		CHECK(reactions.count() == 3);
+		reactions.set(4, QString());
+		CHECK(reactions.list.size() == 1 && reactions.count() == 1);
+		CHECK(!(reactions == post.reactions));
+		CHECK(ReactionKinds().size() == 47);
+		CHECK(ReactionIndex(u"\u2764"_q) >= 0);
+	}
+	// Image types by name, HEIC needs the server side conversion.
+	{
+		const auto heic = FileInfo::Parse(Json(R"({
+			"guid": "g", "name": "IMG_1.HEIC", "size": 5})"));
+		CHECK(heic.isImage() && heic.needsConversion());
+		const auto jpeg = FileInfo::Parse(Json(R"({
+			"guid": "g", "name": "photo.JPG", "size": 5})"));
+		CHECK(jpeg.mimeType == u"image/jpeg"_q && jpeg.isImage());
+		const auto text = FileInfo::Parse(Json(R"({
+			"guid": "g", "name": "a.txt", "size": 5})"));
+		CHECK(!text.isImage());
 	}
 	// Ids encoding used by /msg/post?ids=.
 	CHECK(Api::EncodeDigit(0) == u"0"_q);

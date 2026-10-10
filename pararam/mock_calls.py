@@ -196,7 +196,21 @@ async def notify_main_sockets():
             MAIN_SOCKETS.discard(ws)
 
 
+async def send_main_event(msg, data):
+    for ws in list(MAIN_SOCKETS):
+        try:
+            await ws.send_str(json.dumps({'msg': msg, 'data': data,
+                                          'ver': 1}))
+        except Exception:  # noqa: BLE001
+            MAIN_SOCKETS.discard(ws)
+
+
 # API used by mock_server.py (called from its threads).
+
+def main_event(msg, data):
+    """Sends an event like post_edit to the connected main sockets."""
+    schedule(send_main_event(msg, data))
+
 
 def list_calls(user_id, visible_chat_ids):
     with LOCK:

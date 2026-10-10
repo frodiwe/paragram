@@ -33,11 +33,13 @@ in-process by a translation layer that calls the pararam.io REST API.
 | Chat tags                          | Chat folders (editing folders edits tags) |
 | Pinned posts                       | Pinned messages bar                       |
 | Posts, replies                     | Messages, replies                         |
-| `**bold**`, `` `code` ``, ```` ``` ````, `~~strike~~`, links, mentions | Formatted text |
+| `**bold**`, `` `code` ``, ```` ``` ````, `~~strike~~`, `[text](url)` links, mentions, tags, quotes, spoilers | Formatted text (from the server's `text_parsed`) |
+| User and chat avatars              | Profile pictures (from the file server)   |
 | Files                              | Documents (download, open, save)          |
-| Images                             | Inline photos                             |
+| Images (JPEG, PNG, GIF, WebP, AVIF, HEIC) | Inline photos, server side resized previews |
+| Reactions (one per user, 47 kinds) | Message reactions (add, change, remove, who reacted) |
 | Read marks                         | Read / unread state and counters          |
-| New posts, edits and deletions     | Live updates (polled every few seconds)   |
+| New posts, edits, deletions, reactions | Live updates (polling plus the main socket's `post_edit`) |
 | Members                            | Group members list                        |
 | Users / chats search               | Global search                             |
 | Posts search                       | Search in a chat and global message search|
@@ -180,10 +182,13 @@ The pararam.io endpoints are the ones used by the official Python client
 ## Known limitations
 
 * pararam.io does not report image sizes, which inline photos need, so the
-  client reads them from the first 64 KB of each image. Images whose size
-  cannot be read this way are shown as files.
+  client reads them from the first 256 KB of each image, or from the
+  server side resized preview (`?s=400`) when that fails (HEIC, large
+  metadata). Images whose size cannot be read either way are shown as files.
+* GIFs are shown as still photos.
+* Reaction icons are drawn from the emoji set of the client, not the
+  pararam.io icons.
 * Muting a chat is stored locally (per account), not on pararam.io.
-* No avatars yet.
 * Calls were built from the pararam.io web client and tested against a mock
   media server only; the details of the real media server may need tuning.
 * Screen sharing in video chats (group calls) is not supported yet, in
@@ -193,7 +198,8 @@ The pararam.io endpoints are the ones used by the official Python client
 * Forwarded messages are sent as copies with a "Forwarded from" line.
 * Live updates use polling, so they arrive with a delay of up to ~3 seconds.
 * Edits and deletions of old posts (beyond the last 30 of a chat) are only
-  picked up when the chat history is reloaded.
+  picked up when the chat history is reloaded, unless the main socket
+  reports them (`post_edit`).
 
 ## License
 

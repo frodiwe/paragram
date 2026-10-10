@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QTimeZone>
 
 #include <algorithm>
+#include <optional>
 
 namespace Pararam {
 namespace {
@@ -23,6 +24,27 @@ void AppendIds(std::vector<int64> &to, const QJsonValue &value) {
 			to.push_back(id);
 		}
 	}
+}
+
+[[nodiscard]] QString MimeByName(const QString &name) {
+	const auto dot = name.lastIndexOf('.');
+	const auto ext = (dot >= 0) ? name.mid(dot + 1).toLower() : QString();
+	if (ext == u"jpg"_q || ext == u"jpeg"_q || ext == u"jfif"_q) {
+		return u"image/jpeg"_q;
+	} else if (ext == u"png"_q) {
+		return u"image/png"_q;
+	} else if (ext == u"gif"_q) {
+		return u"image/gif"_q;
+	} else if (ext == u"webp"_q) {
+		return u"image/webp"_q;
+	} else if (ext == u"bmp"_q) {
+		return u"image/bmp"_q;
+	} else if (ext == u"heic"_q) {
+		return u"image/heic"_q;
+	} else if (ext == u"avif"_q) {
+		return u"image/avif"_q;
+	}
+	return QString();
 }
 
 } // namespace
@@ -121,6 +143,7 @@ UserInfo UserInfo::Parse(const QJsonObject &object) {
 	result.uniqueName = JsonString(object, u"unique_name"_q);
 	result.info = JsonString(object, u"info"_q);
 	result.avatar = JsonString(object, u"avatar"_q);
+	result.updated = ParseTime(JsonString(object, u"time_updated"_q));
 	result.bot = JsonBool(object, u"is_bot"_q);
 	result.deleted = JsonBool(object, u"deleted"_q);
 	return result;
@@ -139,6 +162,9 @@ void UserInfo::mergeFrom(const UserInfo &other) {
 	if (!other.avatar.isEmpty()) {
 		avatar = other.avatar;
 	}
+	if (other.updated) {
+		updated = other.updated;
+	}
 	if (other.full) {
 		bot = other.bot;
 		deleted = other.deleted;
@@ -156,6 +182,12 @@ FileInfo FileInfo::Parse(const QJsonObject &object) {
 		result.name = JsonString(object, u"filename"_q);
 	}
 	result.mimeType = JsonString(object, u"mime_type"_q);
+	if (result.mimeType.isEmpty()) {
+		result.mimeType = JsonString(object, u"type"_q);
+	}
+	if (result.mimeType.isEmpty() || result.mimeType.indexOf('/') < 0) {
+		result.mimeType = MimeByName(result.name);
+	}
 	result.size = JsonInt(object, u"size"_q);
 	for (const auto &key : { u"width"_q, u"w"_q }) {
 		if (const auto value = JsonInt(object, key)) {
@@ -171,12 +203,149 @@ FileInfo FileInfo::Parse(const QJsonObject &object) {
 }
 
 bool FileInfo::isImage() const {
+	// The image types the pararam.io web client shows inline.
 	const auto mime = mimeType.toLower();
 	return mime == u"image/jpeg"_q
+		|| mime == u"image/jpg"_q
+		|| mime == u"image/pjpeg"_q
 		|| mime == u"image/png"_q
 		|| mime == u"image/webp"_q
 		|| mime == u"image/gif"_q
-		|| mime == u"image/bmp"_q;
+		|| mime == u"image/bmp"_q
+		|| mime == u"image/avif"_q
+		|| needsConversion();
+}
+
+bool FileInfo::needsConversion() const {
+	return (mimeType.toLower() == u"image/heic"_q)
+		|| name.endsWith(u".heic"_q, Qt::CaseInsensitive);
+}
+
+Reactions Reactions::Parse(const QJsonValue &value) {
+	auto result = Reactions();
+	const auto object = value.toObject();
+	for (auto i = object.begin(); i != object.end(); ++i) {
+		auto users = JsonIds(i.value());
+		if (!users.empty()) {
+			result.list.emplace_back(i.key(), std::move(users));
+		}
+	}
+	// Keep the picker order, so that the list is stable between updates.
+	std::stable_sort(result.list.begin(), result.list.end(), [](
+			const auto &a,
+			const auto &b) {
+		const auto i = ReactionIndex(a.first);
+		const auto j = ReactionIndex(b.first);
+		return (i < 0 ? 1000 : i) < (j < 0 ? 1000 : j);
+	});
+	return result;
+}
+
+QString Reactions::of(int64 userId) const {
+	for (const auto &[emoji, users] : list) {
+		if (std::find(users.begin(), users.end(), userId) != users.end()) {
+			return emoji;
+		}
+	}
+	return QString();
+}
+
+int Reactions::count() const {
+	auto result = 0;
+	for (const auto &[emoji, users] : list) {
+		result += int(users.size());
+	}
+	return result;
+}
+
+void Reactions::set(int64 userId, const QString &emoji) {
+	for (auto i = list.begin(); i != list.end();) {
+		auto &users = i->second;
+		users.erase(
+			std::remove(users.begin(), users.end(), userId),
+			users.end());
+		i = users.empty() ? list.erase(i) : (i + 1);
+	}
+	if (emoji.isEmpty()) {
+		return;
+	}
+	for (auto &[already, users] : list) {
+		if (already == emoji) {
+			users.push_back(userId);
+			return;
+		}
+	}
+	const auto index = ReactionIndex(emoji);
+	auto position = list.begin();
+	while (position != list.end()
+		&& ReactionIndex(position->first) >= 0
+		&& ReactionIndex(position->first) < index) {
+		++position;
+	}
+	list.insert(position, { emoji, { userId } });
+}
+
+const std::vector<ReactionKind> &ReactionKinds() {
+	static const auto result = std::vector<ReactionKind>{
+		{ u"\U0001F44D", "Like" },
+		{ u"\U0001F525", "Fire" },
+		{ u"\u2714", "Check" },
+		{ u"\U0001F4A1", "Idea" },
+		{ u"\u26A0\uFE0F", "Attention" },
+		{ u"\U0001F4AF", "100%" },
+		{ u"\U0001F44E", "Dislike" },
+		{ u"\u2753", "Question" },
+		{ u"\U0001F937", "Don't know" },
+		{ u"\U0001F468\u200D\U0001F4BB", "Working on it" },
+		{ u"\U0001F973", "Congratulations" },
+		{ u"\U0001FAE1", "Yes" },
+		{ u"\U0001F602", "Tears of joy" },
+		{ u"\U0001F926", "Facepalm" },
+		{ u"\U0001F6E0\uFE0F", "Fixing" },
+		{ u"\U0001FAB2", "Bug" },
+		{ u"\U0001F480", "Skull" },
+		{ u"\U0001F4DE", "Call" },
+		{ u"\U0001F50D", "Search" },
+		{ u"\U0001F44F", "Clap" },
+		{ u"\U0001F4A9", "Poop" },
+		{ u"\u2764", "Heart" },
+		{ u"\U0001F622", "Sad" },
+		{ u"\U0001F440", "Look" },
+		{ u"\u23F0", "Alarm" },
+		{ u"\U0001F62E", "Oops" },
+		{ u"\U0001F642", "Smile" },
+		{ u"\U0001F37B", "Beer" },
+		{ u"\U0001F37E", "Champagne" },
+		{ u"\U0001F92C", "Swears" },
+		{ u"\U0001F621", "Angry" },
+		{ u"\U0001F91D", "Handshake" },
+		{ u"\U0001F44B", "Wave" },
+		{ u"\U0001F596", "Vulcan salute" },
+		{ u"\U0001FAF0", "Fingers" },
+		{ u"\U0001F44C", "OK" },
+		{ u"\u270C\uFE0F", "Peace" },
+		{ u"\U0001F918", "Rock" },
+		{ u"\U0001F4AA", "Biceps" },
+		{ u"\U0001F922", "Nauseated" },
+		{ u"\U0001F385", "Santa" },
+		{ u"\U0001F384", "Tree" },
+		{ u"\U0001F52E", "Ball" },
+		{ u"\U0001F381", "Gift" },
+		{ u"\u2795", "Plus" },
+		{ u"\u2796", "Minus" },
+		{ u"\U0001F921", "Clown" },
+	};
+	return result;
+}
+
+int ReactionIndex(const QString &emoji) {
+	const auto &list = ReactionKinds();
+	for (auto i = 0, count = int(list.size()); i != count; ++i) {
+		if (emoji == QString::fromUtf16(list[i].emoji)) {
+			return i;
+		}
+	}
+	return -1;
 }
 
 PostInfo PostInfo::Parse(const QJsonObject &object) {
@@ -204,6 +373,10 @@ PostInfo PostInfo::Parse(const QJsonObject &object) {
 		if (parsed.link.isEmpty()) {
 			parsed.link = JsonString(part, u"url"_q);
 		}
+		parsed.title = JsonString(part, u"title"_q);
+		parsed.text = JsonString(part, u"text"_q);
+		parsed.description = JsonString(part, u"description"_q);
+		parsed.lang = JsonString(part, u"lang"_q);
 		parsed.userId = JsonInt(part, u"id"_q);
 		result.parsed.push_back(parsed);
 	}
@@ -220,6 +393,7 @@ PostInfo PostInfo::Parse(const QJsonObject &object) {
 	if (meta.contains(u"user"_q)) {
 		result.metaUser = UserInfo::Parse(meta.value(u"user"_q).toObject());
 	}
+	result.reactions = Reactions::Parse(meta.value(u"reactions"_q));
 	if (!result.ver) {
 		result.ver = int(JsonInt(meta, u"ver"_q));
 	}
@@ -269,6 +443,7 @@ ChatInfo ChatInfo::Parse(const QJsonObject &object) {
 	if (!result.updated) {
 		result.updated = result.created;
 	}
+	result.edited = ParseTime(JsonString(object, u"time_edited"_q));
 	result.authorId = JsonInt(object, u"author_id"_q);
 	result.lastMsgAuthorId = JsonInt(object, u"last_msg_author_id"_q);
 	result.lastMsg = JsonString(object, u"last_msg"_q);
@@ -285,9 +460,145 @@ ChatInfo ChatInfo::Parse(const QJsonObject &object) {
 	return result;
 }
 
+namespace {
+
+// Builds the text the way the pararam.io web client renders text_parsed.
+[[nodiscard]] FormattedText FromParsed(const std::vector<TextPart> &parsed) {
+	auto result = FormattedText();
+	const auto append = [&](
+			const QString &value,
+			std::optional<Entity> entity = std::nullopt) {
+		if (entity && !value.isEmpty()) {
+			entity->offset = int(result.text.size());
+			entity->length = int(value.size());
+			result.entities.push_back(*entity);
+		}
+		result.text.append(value);
+	};
+	const auto entity = [](Entity::Type type) {
+		return Entity{ .type = type };
+	};
+	for (const auto &part : parsed) {
+		const auto &type = part.type;
+		if (type == u"br"_q) {
+			result.text.append('\n');
+		} else if (type == u"bold"_q) {
+			append(part.value, entity(Entity::Type::Bold));
+		} else if (type == u"strike"_q) {
+			append(part.value, entity(Entity::Type::Strike));
+		} else if (type == u"blockquote1"_q) {
+			// Code block, the value starts with the language if lang is set.
+			auto code = part.value;
+			auto language = QString();
+			if (!part.lang.isEmpty()) {
+				static const auto separator = QRegularExpression(
+					u"[\r\n ]"_q);
+				const auto position = int(code.indexOf(separator));
+				if (position >= 0) {
+					language = (part.lang == u"code"_q)
+						? QString()
+						: part.lang;
+					code = code.mid(position + 1);
+				}
+			}
+			while (code.startsWith('\n') || code.startsWith('\r')) {
+				code = code.mid(1);
+			}
+			while (code.endsWith('\n') || code.endsWith('\r')) {
+				code.chop(1);
+			}
+			if (!result.text.isEmpty() && !result.text.endsWith('\n')) {
+				result.text.append('\n');
+			}
+			append(code, Entity{
+				.type = Entity::Type::Pre,
+				.url = language,
+			});
+		} else if (type == u"blockquote2"_q) {
+			append(part.value, entity(Entity::Type::Code));
+		} else if (type == u"blockquote3"_q || type == u"blockquote4"_q) {
+			append(part.value, entity(Entity::Type::Blockquote));
+		} else if (type == u"link"_q) {
+			const auto title = !part.title.isEmpty()
+				? part.title
+				: !part.value.isEmpty()
+				? part.value
+				: part.link;
+			const auto url = part.link.isEmpty() ? part.value : part.link;
+			if (url.isEmpty()) {
+				append(title);
+			} else if (title == url) {
+				append(title, entity(Entity::Type::Url));
+			} else {
+				append(title, Entity{
+					.type = Entity::Type::TextUrl,
+					.url = url,
+				});
+			}
+		} else if (type == u"mention"_q
+			|| type == u"userlink"_q
+			|| type == u"user_link"_q) {
+			if (part.userId) {
+				append(part.value, Entity{
+					.type = Entity::Type::MentionName,
+					.userId = part.userId,
+				});
+			} else {
+				append(part.value, entity(Entity::Type::Bold));
+			}
+		} else if (type == u"mention_special"_q
+			|| type == u"mention_group"_q) {
+			append(part.value, entity(Entity::Type::Bold));
+		} else if (type == u"email"_q) {
+			append(part.value, entity(Entity::Type::Email));
+		} else if (type == u"tag"_q) {
+			append(part.value, entity(Entity::Type::Hashtag));
+		} else if (type == u"phone"_q) {
+			append(
+				part.text.isEmpty() ? part.value : part.text,
+				entity(Entity::Type::Phone));
+		} else if (type == u"spoiler"_q) {
+			append(
+				part.text.isEmpty() ? part.value : part.text,
+				entity(Entity::Type::Spoiler));
+		} else if (type == u"textcolor"_q) {
+			append(part.text.isEmpty() ? part.value : part.text);
+		} else if (type == u"tooltip"_q) {
+			append(part.description.isEmpty()
+				? (part.text.isEmpty() ? part.value : part.text)
+				: part.description);
+		} else if (type == u"checkbox"_q) {
+			if (!result.text.isEmpty() && !result.text.endsWith('\n')) {
+				result.text.append('\n');
+			}
+			const auto checked = !part.description.trimmed().isEmpty();
+			result.text.append(checked ? u"\u2611 "_q : u"\u2610 "_q);
+			append(part.text.isEmpty() ? part.value : part.text);
+		} else if (type == u"bot_link"_q) {
+			append(part.title.isEmpty() ? part.value : part.title);
+		} else {
+			// text, time, datetime, ipv4, hint, table and unknown ones.
+			append(!part.value.isEmpty()
+				? part.value
+				: !part.text.isEmpty()
+				? part.text
+				: part.title);
+		}
+	}
+	return result;
+}
+
+} // namespace
+
 FormattedText ParseIncomingText(
 		const QString &text,
 		const std::vector<TextPart> &parsed) {
+	if (!parsed.empty()) {
+		auto result = FromParsed(parsed);
+		if (!result.text.trimmed().isEmpty() || text.trimmed().isEmpty()) {
+			return result;
+		}
+	}
 	auto result = FormattedText();
 	result.text.reserve(text.size());
 	const auto size = int(text.size());
@@ -438,7 +749,7 @@ QString FormatOutgoingText(const FormattedText &text) {
 			break;
 		case Entity::Type::TextUrl:
 			if (text.text.mid(from, till - from) != entity.url) {
-				insertions.push_back({ till, -(++order), u" ("_q + entity.url + ')' });
+				wrap(u"["_q, u"]("_q + entity.url + ')');
 			}
 			break;
 		default: break;

@@ -58,7 +58,6 @@ public:
 	using Done = std::function<void(const QJsonValue &result)>;
 	using Fail = std::function<void(const HttpError &error)>;
 	using BytesDone = std::function<void(const QByteArray &bytes)>;
-	using Progress = std::function<void(qint64 received, qint64 total)>;
 
 	Api();
 	~Api();
@@ -85,13 +84,8 @@ public:
 		Fail fail);
 	uint64 del(const QString &path, Done done, Fail fail);
 
-	uint64 download(
-		const QString &guid,
-		const QString &name,
-		BytesDone done,
-		Fail fail,
-		Progress progress = nullptr);
-	uint64 downloadUrl(const QString &url, BytesDone done, Fail fail);
+	// Path on the file server, like /avatar/user/1/200.
+	uint64 downloadPath(const QString &path, BytesDone done, Fail fail);
 
 	// Requests only the beginning of a file, if the server supports ranges.
 	uint64 downloadHead(

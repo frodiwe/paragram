@@ -1272,6 +1272,12 @@ void CallManager::connectSocket() {
 		const auto type = message.value(u"msg"_q).toString();
 		if (type == u"call"_q) {
 			scheduleRefresh(kRefreshAfterEvent);
+		} else if (type == u"post_edit"_q) {
+			// Edits and reactions of a post.
+			const auto data = message.value(u"data"_q).toObject();
+			_backend->postEdited(
+				JsonInt(data, u"thread_id"_q),
+				int(JsonInt(data, u"in_thread_no"_q)));
 		} else if (type == u"unauthorized"_q) {
 			LOG(("Pararam: Main socket unauthorized."));
 			socket->close();

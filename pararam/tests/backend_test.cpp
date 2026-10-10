@@ -4,12 +4,14 @@
 // are serialized with the generated TL classes and responses are parsed
 // with the generated response types. See pararam/tests/run_backend_test.sh.
 #include "pararam/pararam_backend.h"
+#include "pararam/pararam_reaction_icons.h"
 #include "pararam/calls/pararam_media_signaling.h"
 #include "mtproto/mtp_instance.h"
 #include "mtproto/mtproto_response.h"
 #include "base/unixtime.h"
 
 #include <QtCore/QDateTime>
+#include <QtCore/QSize>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QEventLoop>
 #include <QtCore/QTimer>
@@ -18,6 +20,8 @@
 #include <QtNetwork/QNetworkReply>
 
 #include <cstdio>
+#include <map>
+#include <optional>
 
 // The backend only calls these two methods of MTP::Instance.
 namespace {
@@ -50,6 +54,16 @@ std::shared_ptr<Signaling> TakePendingSignaling() {
 }
 
 } // namespace Pararam::Media
+
+namespace Pararam {
+
+// The real icons are drawn with the emoji set of lib_ui.
+std::vector<QByteArray> RenderReactionIcons(
+		const std::vector<QString> &emoji) {
+	return std::vector<QByteArray>(emoji.size(), QByteArray("icon"));
+}
+
+} // namespace Pararam
 
 namespace base {
 
@@ -463,28 +477,185 @@ int main(int argc, char *argv[]) {
 			}
 		}
 	}
-	// Images are shown as photos, their size is read from the file.
-	if (const auto page = history(Channel(11), 0, 0, 1, "messages.getHistory (photo)")) {
+	// Images are shown as photos with a server side resized preview.
+	const auto photoOf = [](const MTPMessage &message) {
+		const auto media = (message.type() == mtpc_message)
+			? message.c_message().vmedia()
+			: nullptr;
+		return (media && media->type() == mtpc_messageMediaPhoto)
+			? &media->c_messageMediaPhoto().vphoto()->c_photo()
+			: nullptr;
+	};
+	const auto sizeOf = [](const MTPDphoto &photo, const char *type) {
+		for (const auto &size : photo.vsizes().v) {
+			if (size.type() == mtpc_photoSize
+				&& qs(size.c_photoSize().vtype()) == QString(type)) {
+				const auto &data = size.c_photoSize();
+				return QSize(data.vw().v, data.vh().v);
+			}
+		}
+		return QSize();
+	};
+	const auto fileOf = [](const MTPDphoto &photo, const char *type, const char *name) {
+		const auto file = Call<MTPupload_File>(MTPupload_GetFile(
+			MTP_flags(0),
+			MTP_inputPhotoFileLocation(
+				photo.vid(),
+				photo.vaccess_hash(),
+				photo.vfile_reference(),
+				MTP_string(type)),
+			MTP_long(0),
+			MTP_int(512 * 1024)), name);
+		return file ? file->c_upload_file().vbytes().v : QByteArray();
+	};
+	auto reactedId = 0;
+	if (const auto page = history(Channel(11), 0, 0, 4, "messages.getHistory (photos)")) {
 		const auto list = MessagesOf(*page);
-		CHECK(list.size() == 1);
-		if (!list.isEmpty() && list[0].type() == mtpc_message) {
-			const auto media = list[0].c_message().vmedia();
-			CHECK(media && media->type() == mtpc_messageMediaPhoto);
-			if (media && media->type() == mtpc_messageMediaPhoto) {
-				const auto &photo = media->c_messageMediaPhoto().vphoto()->c_photo();
-				const auto &size = photo.vsizes().v[0].c_photoSize();
-				CHECK(size.vw().v == 40 && size.vh().v == 30);
+		CHECK(list.size() == 4);
+		for (const auto &message : list) {
+			const auto id = IdOf(message);
+			const auto photo = photoOf(message);
+			if (id == 3) {
+				// Size read from the file header.
+				CHECK(photo != nullptr);
+				if (photo) {
+					CHECK(sizeOf(*photo, "y") == QSize(40, 30));
+					CHECK(sizeOf(*photo, "m") == QSize(40, 30));
+					CHECK(fileOf(*photo, "y", "upload.getFile (photo)").startsWith("\x89PNG"));
+				}
+			} else if (id == 4) {
+				// HEIC, size taken from the preview of the file server.
+				CHECK(photo != nullptr);
+				if (photo) {
+					CHECK(sizeOf(*photo, "y") == QSize(400, 300));
+					const auto preview = fileOf(*photo, "m", "upload.getFile (HEIC preview)");
+					CHECK(preview.startsWith("\x89PNG"));
+				}
+			} else if (id == 5) {
+				// No mime type, a .jpg name.
+				CHECK(photo != nullptr);
+				if (photo) {
+					CHECK(sizeOf(*photo, "y") == QSize(60, 120));
+				}
+			} else if (id == 6) {
+				reactedId = id;
+				const auto &data = message.c_message();
+				CHECK(TextOf(message) == u"Notes are in the release notes and bold works"_q);
+				auto textUrl = false;
+				for (const auto &entity : data.ventities() ? data.ventities()->v : QVector<MTPMessageEntity>()) {
+					if (entity.type() == mtpc_messageEntityTextUrl) {
+						textUrl = (qs(entity.c_messageEntityTextUrl().vurl()) == u"https://pararam.io/notes"_q);
+					}
+				}
+				CHECK(textUrl);
+				CHECK(data.vreactions() != nullptr);
+				if (data.vreactions()) {
+					const auto &results = data.vreactions()->c_messageReactions().vresults().v;
+					CHECK(results.size() == 2);
+					CHECK(!results.isEmpty() && results[0].c_reactionCount().vcount().v == 2);
+				}
+			}
+		}
+		// Every user has an avatar from the file server.
+		auto withPhoto = 0;
+		for (const auto &user : page->c_messages_channelMessages().vusers().v) {
+			if (user.type() == mtpc_user
+				&& user.c_user().vphoto()
+				&& user.c_user().vphoto()->type() == mtpc_userProfilePhoto) {
+				++withPhoto;
 				const auto file = Call<MTPupload_File>(MTPupload_GetFile(
 					MTP_flags(0),
-					MTP_inputPhotoFileLocation(
-						photo.vid(),
-						photo.vaccess_hash(),
-						photo.vfile_reference(),
-						MTP_string("y")),
+					MTP_inputPeerPhotoFileLocation(
+						MTP_flags(0),
+						User(user.c_user().vid().v),
+						user.c_user().vphoto()->c_userProfilePhoto().vphoto_id()),
 					MTP_long(0),
-					MTP_int(512 * 1024)), "upload.getFile (photo)");
+					MTP_int(512 * 1024)), "upload.getFile (avatar)");
 				CHECK(file && file->c_upload_file().vbytes().v.startsWith("\x89PNG"));
 			}
+		}
+		CHECK(withPhoto > 0);
+	}
+
+	// Reactions: the list, toggling, polling and who reacted.
+	if (const auto available = Call<MTPmessages_AvailableReactions>(
+			MTPmessages_GetAvailableReactions(MTP_int(0)),
+			"messages.getAvailableReactions")) {
+		CHECK(available->type() == mtpc_messages_availableReactions);
+		if (available->type() == mtpc_messages_availableReactions) {
+			const auto &list = available->c_messages_availableReactions().vreactions().v;
+			CHECK(list.size() == 47);
+			if (!list.isEmpty()) {
+				const auto &icon = list[0].c_availableReaction().vstatic_icon();
+				const auto file = Call<MTPupload_File>(MTPupload_GetFile(
+					MTP_flags(0),
+					MTP_inputDocumentFileLocation(
+						icon.c_document().vid(),
+						icon.c_document().vaccess_hash(),
+						icon.c_document().vfile_reference(),
+						MTP_string()),
+					MTP_long(0),
+					MTP_int(512 * 1024)), "upload.getFile (reaction icon)");
+				CHECK(file && file->c_upload_file().vbytes().v == "icon");
+			}
+		}
+	}
+	const auto reactionsIn = [](const MTPUpdates &updates) {
+		auto result = std::map<QString, std::pair<int, bool>>();
+		for (const auto &update : UpdatesOf<MTPUpdate>(updates)) {
+			if (update.type() != mtpc_updateMessageReactions) {
+				continue;
+			}
+			const auto &reactions = update.c_updateMessageReactions().vreactions();
+			for (const auto &count : reactions.c_messageReactions().vresults().v) {
+				const auto &data = count.c_reactionCount();
+				result[qs(data.vreaction().c_reactionEmoji().vemoticon())] = {
+					data.vcount().v,
+					data.vchosen_order().has_value(),
+				};
+			}
+		}
+		return result;
+	};
+	const auto fire = QString::fromUtf8("\xF0\x9F\x94\xA5");
+	const auto joy = QString::fromUtf8("\xF0\x9F\x98\x82");
+	if (reactedId) {
+		const auto react = [&](const QString &emoji, const char *name) {
+			return Call<MTPUpdates>(MTPmessages_SendReaction(
+				MTP_flags(MTPmessages_SendReaction::Flag::f_reaction),
+				Channel(11),
+				MTP_int(reactedId),
+				MTP_vector<MTPReaction>(emoji.isEmpty()
+					? QVector<MTPReaction>()
+					: QVector<MTPReaction>{ MTP_reactionEmoji(MTP_string(emoji)) })),
+				name);
+		};
+		if (const auto result = react(fire, "messages.sendReaction")) {
+			const auto counts = reactionsIn(*result);
+			CHECK(counts.contains(fire) && counts.at(fire) == std::make_pair(2, true));
+		}
+		if (const auto result = react(QString(), "messages.sendReaction (remove)")) {
+			const auto counts = reactionsIn(*result);
+			CHECK(counts.contains(fire) && counts.at(fire) == std::make_pair(1, false));
+		}
+		Mock(u"/_mock/react"_q, QByteArray(R"({"chat_id": 11, "post_no": 6, "user_id": 3, "reaction": ")")
+			+ joy.toUtf8() + "\"}");
+		if (const auto result = Call<MTPUpdates>(MTPmessages_GetMessagesReactions(
+				Channel(11),
+				MTP_vector<MTPint>(1, MTP_int(reactedId))), "messages.getMessagesReactions")) {
+			const auto counts = reactionsIn(*result);
+			CHECK(counts.contains(joy) && counts.at(joy).first == 1);
+		}
+		if (const auto list = Call<MTPmessages_MessageReactionsList>(
+				MTPmessages_GetMessageReactionsList(
+					MTP_flags(0),
+					Channel(11),
+					MTP_int(reactedId),
+					MTPReaction(),
+					MTPstring(),
+					MTP_int(50)), "messages.getMessageReactionsList")) {
+			// Bob's thumbs up and fire, Carol's new reaction.
+			CHECK(list->c_messages_messageReactionsList().vcount().v == 3);
 		}
 	}
 	if (documentId) {

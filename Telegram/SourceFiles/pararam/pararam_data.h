@@ -38,6 +38,7 @@ struct UserInfo {
 	QString uniqueName;
 	QString info;
 	QString avatar;
+	TimeId updated = 0;
 	bool bot = false;
 	bool deleted = false;
 	bool full = false; // Loaded from /user/list, not only from post meta.
@@ -59,12 +60,39 @@ struct FileInfo {
 		return !guid.isEmpty();
 	}
 	[[nodiscard]] bool isImage() const;
+	// HEIC is shown through the server side conversion only.
+	[[nodiscard]] bool needsConversion() const;
 };
+
+// Emoji -> users who reacted, in the pararam.io reactions order.
+struct Reactions {
+	std::vector<std::pair<QString, std::vector<int64>>> list;
+
+	[[nodiscard]] static Reactions Parse(const QJsonValue &value);
+	[[nodiscard]] QString of(int64 userId) const;
+	[[nodiscard]] int count() const;
+	void set(int64 userId, const QString &emoji);
+	friend inline bool operator==(
+		const Reactions &a,
+		const Reactions &b) = default;
+};
+
+// The reactions pararam.io offers, in the order of its picker.
+struct ReactionKind {
+	const char16_t *emoji = nullptr;
+	const char *title = nullptr;
+};
+[[nodiscard]] const std::vector<ReactionKind> &ReactionKinds();
+[[nodiscard]] int ReactionIndex(const QString &emoji);
 
 struct TextPart {
 	QString type;
 	QString value;
 	QString link;
+	QString title;
+	QString text;
+	QString description;
+	QString lang;
 	int64 userId = 0;
 };
 
@@ -82,6 +110,7 @@ struct PostInfo {
 	bool deleted = false;
 	FileInfo file;
 	std::vector<QString> attachments;
+	Reactions reactions;
 	QString eventType;
 	QJsonObject eventData;
 	UserInfo metaUser;
@@ -110,6 +139,7 @@ struct ChatInfo {
 	int historyStart = 0;
 	TimeId created = 0;
 	TimeId updated = 0;
+	TimeId edited = 0;
 	int64 authorId = 0;
 	int64 lastMsgAuthorId = 0;
 	QString lastMsg;
@@ -137,6 +167,11 @@ struct Entity {
 		TextUrl,
 		MentionName,
 		Strike,
+		Spoiler,
+		Blockquote,
+		Email,
+		Hashtag,
+		Phone,
 	};
 	Type type = Type::Bold;
 	int offset = 0;
@@ -150,8 +185,8 @@ struct FormattedText {
 	std::vector<Entity> entities;
 };
 
-// Converts pararam text (light markdown + parsed links / mentions)
-// to plain text with entities.
+// Converts a pararam post to plain text with entities. The server
+// parsed text_parsed is used when present, the raw text otherwise.
 [[nodiscard]] FormattedText ParseIncomingText(
 	const QString &text,
 	const std::vector<TextPart> &parsed);

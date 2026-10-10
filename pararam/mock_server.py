@@ -129,11 +129,35 @@ def add_post(chat_id, user_id, text, reply_no=None, file=None,
     return post
 
 
+TOKENS = re.compile(
+    r'(\[(.+?)\]\((https?://[^\s)]+)\))'  # Markdown link.
+    r'|\*\*(.+?)\*\*'  # Bold.
+    r'|~~(.+?)~~'  # Strike.
+    r'|`([^`\n]+)`'  # Inline code.
+    r'|(https?://\S+)'  # Link.
+    r'|(@\w+)'  # Mention.
+    r'|([^@h\[*~`]+|.)')
+
+
 def parse_text(text):
+    # Mimics the text_parsed of pararam.io: markers are removed from
+    # the values, markdown links keep the source in value.
     result = []
-    for match in re.finditer(r'(https?://\S+)|(@\w+)|([^@h]+|.)', text or ''):
-        url, mention, rest = match.groups()
-        if url:
+    for match in TOKENS.finditer(text or ''):
+        (markdown, title, href, bold, strike, code, url, mention,
+         rest) = match.groups()
+        if markdown:
+            result.append({'type': 'link', 'value': markdown,
+                           'link': href, 'title': title})
+        elif bold:
+            result.append({'type': 'bold', 'value': bold, 'closed': True})
+        elif strike:
+            result.append({'type': 'strike', 'value': strike,
+                           'closed': True})
+        elif code:
+            result.append({'type': 'blockquote2', 'value': code,
+                           'closed': True})
+        elif url:
             result.append({'type': 'link', 'value': url, 'link': url})
         elif mention:
             user = next((u for u in USERS.values()
@@ -148,18 +172,63 @@ def parse_text(text):
     return result
 
 
-def make_png(width, height):
+def make_png(width, height, color=(200, 80, 40)):
     def chunk(kind, data):
         body = kind + data
         return (struct.pack('>I', len(data)) + body
                 + struct.pack('>I', zlib.crc32(body) & 0xffffffff))
-    rows = b''.join(b'\x00' + bytes([200, 80, 40]) * width
+    rows = b''.join(b'\x00' + bytes(color) * width
                     for _ in range(height))
     return (b'\x89PNG\r\n\x1a\n'
             + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height,
                                          8, 2, 0, 0, 0))
             + chunk(b'IDAT', zlib.compress(rows))
             + chunk(b'IEND', b''))
+
+
+def fit(width, height, side):
+    if width <= side and height <= side:
+        return width, height
+    scale = side / max(width, height)
+    return max(1, round(width * scale)), max(1, round(height * scale))
+
+
+def set_reaction(post, user_id, reaction):
+    """Toggles like pararam.io: the same reaction again removes it."""
+    reactions = post['meta'].setdefault('reactions', {})
+    mine = next((emoji for emoji, users in reactions.items()
+                 if user_id in users), None)
+    for users in reactions.values():
+        if user_id in users:
+            users.remove(user_id)
+    if reaction and reaction != mine:
+        reactions.setdefault(reaction, []).append(user_id)
+    for emoji in [e for e, users in reactions.items() if not users]:
+        del reactions[emoji]
+    if not reactions:
+        del post['meta']['reactions']
+    CHATS[post['chat_id']]['time_updated'] = now_iso()
+    post_edited(post, user_id)
+    return None if reaction == mine else reaction
+
+
+def post_edited(post, user_id):
+    if mock_calls is not None:
+        mock_calls.main_event('post_edit', {
+            'thread_id': post['chat_id'],
+            'in_thread_no': post['post_no'],
+            'user_id': user_id,
+        })
+
+
+def reaction_state(post, user_id):
+    reactions = post['meta'].get('reactions', {})
+    return {
+        'total': sum(len(users) for users in reactions.values()),
+        'count_reaction': {e: len(u) for e, u in reactions.items()},
+        'my_reaction': next((emoji for emoji, users in reactions.items()
+                             if user_id in users), None),
+    }
 
 
 def seed():
@@ -190,10 +259,28 @@ def seed():
     add_post(11, 3, 'Release 1.1 deployed', minutes_ago=30)
     png = make_png(40, 30)
     FILES['guid-screen'] = {'name': 'screen.png', 'mime_type': 'image/png',
-                            'data': png}
+                            'data': png, 'width': 40, 'height': 30}
     add_post(11, 3, 'Screenshot of the release', file={
         'guid': 'guid-screen', 'name': 'screen.png', 'size': len(png),
         'mime_type': 'image/png'}, minutes_ago=20)
+    # A phone photo: HEIC, shown through the resized preview only.
+    FILES['guid-photo'] = {'name': 'IMG_0001.HEIC', 'mime_type': 'image/heic',
+                           'data': b'not really heic' * 100,
+                           'width': 4032, 'height': 3024}
+    add_post(11, 3, '', file={
+        'guid': 'guid-photo', 'name': 'IMG_0001.HEIC', 'size': 1500,
+        'mime_type': 'image/heic'}, minutes_ago=15)
+    # A tall picture without a mime type.
+    tall = make_png(60, 120)
+    FILES['guid-tall'] = {'name': 'tall.jpg', 'mime_type': 'image/png',
+                          'data': tall, 'width': 60, 'height': 120}
+    add_post(11, 4, '', file={
+        'guid': 'guid-tall', 'name': 'tall.jpg', 'size': len(tall)},
+        minutes_ago=12)
+    links = add_post(
+        11, 3, 'Notes are in [the release notes](https://pararam.io/notes) '
+        'and **bold** works', minutes_ago=11)
+    links['meta']['reactions'] = {'\U0001F44D': [3, 4], '\U0001F525': [4]}
     add_post(20, 3, 'Hey Alice, how are you?', minutes_ago=50)
     add_post(20, 1, 'Fine, thanks!', minutes_ago=45)
     add_post(20, 3, 'Great, see you tomorrow', minutes_ago=5)
@@ -313,7 +400,9 @@ class Handler(BaseHTTPRequestHandler):
             SESSIONS.pop(self.session(), None)
             return self.send_json(200, {'status': 'ok'})
         if path.startswith('/download/') and method == 'GET':
-            return self.download(path)
+            return self.download(path, query)
+        if path.startswith('/avatar/') and method == 'GET':
+            return self.avatar(path)
         if path == '/upload' and method == 'POST':
             return self.upload()
 
@@ -407,6 +496,14 @@ class Handler(BaseHTTPRequestHandler):
         match = re.fullmatch(r'/msg/post/(\d+)', path)
         if match and method == 'POST':
             return self.create_post(user_id, int(match.group(1)))
+        match = re.fullmatch(r'/msg/post/(\d+)/(\d+)/reaction', path)
+        if match:
+            post = POSTS.get(int(match.group(1)), {}).get(int(match.group(2)))
+            if not post:
+                return self.send_json(404, {'error': 'not_found'})
+            if method == 'POST':
+                set_reaction(post, user_id, self.json_body().get('reaction'))
+            return self.send_json(200, reaction_state(post, user_id))
         match = re.fullmatch(r'/msg/post/(\d+)/(\d+)', path)
         if match and method in ('PUT', 'DELETE'):
             cid, no = int(match.group(1)), int(match.group(2))
@@ -597,17 +694,35 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(200, {'guid': guid, 'name': name, 'size': len(data),
                              'mime_type': mime, 'time_created': now_iso()})
 
-    def download(self, path):
+    def send_bytes(self, mime, data):
+        self.send_response(200)
+        self.send_header('Content-Type', mime)
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def download(self, path, query):
         parts = path.split('/')
         guid = parts[2] if len(parts) > 2 else ''
         stored = FILES.get(unquote(guid))
         if not stored:
             return self.send_json(404, {'error': 'not_found'})
-        self.send_response(200)
-        self.send_header('Content-Type', stored['mime_type'])
-        self.send_header('Content-Length', str(len(stored['data'])))
-        self.end_headers()
-        self.wfile.write(stored['data'])
+        side = int(query.get('s', 0))
+        if side and 'width' in stored:
+            # The file server resizes images keeping the aspect ratio.
+            width, height = fit(stored['width'], stored['height'], side)
+            return self.send_bytes('image/png', make_png(width, height))
+        self.send_bytes(stored['mime_type'], stored['data'])
+
+    def avatar(self, path):
+        parts = path.split('/')
+        if len(parts) < 5 or parts[2] not in ('user', 'chat'):
+            return self.send_json(404, {'error': 'not_found'})
+        side = min(int(parts[4]), 400) if parts[4].isdigit() else 100
+        seed_id = int(parts[3]) if parts[3].isdigit() else 0
+        color = ((seed_id * 70) % 200 + 30, (seed_id * 130) % 200 + 30,
+                 (seed_id * 40) % 200 + 30)
+        self.send_bytes('image/png', make_png(side, side, color))
 
     # Calls.
 
@@ -674,6 +789,10 @@ class Handler(BaseHTTPRequestHandler):
         post = POSTS.get(cid, {}).get(int(body.get('post_no', 0)))
         if not post:
             return self.send_json(404, {'error': 'not_found'})
+        if path == '/_mock/react':
+            set_reaction(post, int(body.get('user_id', 3)),
+                         body.get('reaction'))
+            return self.send_json(200, post['meta'].get('reactions', {}))
         post['ver'] += 1
         post['time_edited'] = now_iso()
         CHATS[cid]['time_updated'] = now_iso()

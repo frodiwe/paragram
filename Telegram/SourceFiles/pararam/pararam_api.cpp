@@ -400,50 +400,6 @@ void Api::ensureXsrf(std::function<void()> ready, Fail fail) {
 	}
 }
 
-uint64 Api::download(
-		const QString &guid,
-		const QString &name,
-		BytesDone done,
-		Fail fail,
-		Progress progress) {
-	const auto encoded = QString::fromLatin1(QUrl::toPercentEncoding(name));
-	const auto url = _filesUrl
-		+ u"/download/"_q
-		+ guid
-		+ '/'
-		+ (encoded.isEmpty() ? u"file"_q : encoded);
-	const auto requestId = ++_requestIdCounter;
-	auto request = prepare(QUrl(url));
-	request.setTransferTimeout(kTransferTimeoutMs);
-	const auto reply = _manager.get(request);
-	_replies.emplace(requestId, reply);
-	if (progress) {
-		QObject::connect(
-			reply,
-			&QNetworkReply::downloadProgress,
-			this,
-			[=](qint64 received, qint64 total) { progress(received, total); });
-	}
-	QObject::connect(reply, &QNetworkReply::finished, this, [=] {
-		reply->deleteLater();
-		if (!_replies.contains(requestId)) {
-			return;
-		}
-		finished(requestId);
-		const auto data = reply->readAll();
-		const auto status = reply->attribute(
-			QNetworkRequest::HttpStatusCodeAttribute).toInt();
-		if (reply->error() == QNetworkReply::NoError
-			&& status >= 200
-			&& status < 300) {
-			done(data);
-		} else {
-			fail(ParseError(reply, data));
-		}
-	});
-	return requestId;
-}
-
 uint64 Api::downloadHead(
 		const QString &guid,
 		const QString &name,
@@ -494,10 +450,9 @@ uint64 Api::downloadHead(
 	return requestId;
 }
 
-uint64 Api::downloadUrl(const QString &url, BytesDone done, Fail fail) {
+uint64 Api::downloadPath(const QString &path, BytesDone done, Fail fail) {
 	const auto requestId = ++_requestIdCounter;
-	const auto full = url.startsWith('/') ? (_apiUrl + url) : url;
-	auto request = prepare(QUrl(full));
+	auto request = prepare(QUrl(_filesUrl + path));
 	request.setTransferTimeout(kTransferTimeoutMs);
 	const auto reply = _manager.get(request);
 	_replies.emplace(requestId, reply);
@@ -508,7 +463,11 @@ uint64 Api::downloadUrl(const QString &url, BytesDone done, Fail fail) {
 		}
 		finished(requestId);
 		const auto data = reply->readAll();
-		if (reply->error() == QNetworkReply::NoError) {
+		const auto status = reply->attribute(
+			QNetworkRequest::HttpStatusCodeAttribute).toInt();
+		if (reply->error() == QNetworkReply::NoError
+			&& status >= 200
+			&& status < 300) {
 			done(data);
 		} else {
 			fail(ParseError(reply, data));

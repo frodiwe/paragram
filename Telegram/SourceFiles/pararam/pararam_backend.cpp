@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "pararam/pararam_tl_reader.h"
 #include "pararam/pararam_calls.h"
+#include "pararam/pararam_reaction_icons.h"
 #include "mtproto/mtp_instance.h"
 #include "mtproto/mtproto_response.h"
 #include "mtproto/details/mtproto_dump_to_text.h"
@@ -52,8 +53,14 @@ constexpr auto kChannelDifferenceTimeout = 5;
 constexpr auto kArchiveFolderId = 1;
 constexpr auto kSearchLimit = 50;
 constexpr auto kFirstFilterId = 2;
-constexpr auto kImageProbeBytes = 64 * 1024;
+constexpr auto kImageProbeBytes = 256 * 1024;
 constexpr auto kMaxProbedImageSize = int64(50 * 1024 * 1024);
+constexpr auto kPreviewSide = 400; // The ?s= preview of the file server.
+constexpr auto kConvertedSide = 2000; // HEIC converted by the file server.
+constexpr auto kAvatarSmall = 200;
+constexpr auto kAvatarLarge = 400;
+constexpr auto kReactionDocumentBase = uint64(0x7FFFFFFF00000000ULL);
+constexpr auto kMaxRecentReactions = 50;
 
 base::flat_map<const MTP::Instance*, Backend*> &Registry() {
 	static auto result = base::flat_map<const MTP::Instance*, Backend*>();
@@ -62,6 +69,26 @@ base::flat_map<const MTP::Instance*, Backend*> &Registry() {
 
 [[nodiscard]] int64 AccessHash(int64 id) {
 	return int64(uint64(id) * 0x9E3779B97F4A7C15ULL) & 0x7FFFFFFFFFFFFFFFLL;
+}
+
+[[nodiscard]] uint64 HashId(const QString &key) {
+	const auto hash = QCryptographicHash::hash(
+		key.toUtf8(),
+		QCryptographicHash::Sha1);
+	auto result = uint64();
+	memcpy(&result, hash.constData(), sizeof(result));
+	return (result & 0x7FFFFFFFFFFFFFFFULL) | 1;
+}
+
+[[nodiscard]] MTPReaction ReactionToMTP(const QString &emoji) {
+	return MTP_reactionEmoji(MTP_string(emoji));
+}
+
+[[nodiscard]] QSize FitPreview(QSize size) {
+	if (size.width() <= kPreviewSide && size.height() <= kPreviewSide) {
+		return size;
+	}
+	return size.scaled(kPreviewSide, kPreviewSide, Qt::KeepAspectRatio);
 }
 
 [[nodiscard]] TimeId Now() {
@@ -237,6 +264,24 @@ template <typename Type>
 				length,
 				MTP_long(entity.userId)));
 			break;
+		case Entity::Type::Spoiler:
+			result.push_back(MTP_messageEntitySpoiler(offset, length));
+			break;
+		case Entity::Type::Blockquote:
+			result.push_back(MTP_messageEntityBlockquote(
+				MTP_flags(0),
+				offset,
+				length));
+			break;
+		case Entity::Type::Email:
+			result.push_back(MTP_messageEntityEmail(offset, length));
+			break;
+		case Entity::Type::Hashtag:
+			result.push_back(MTP_messageEntityHashtag(offset, length));
+			break;
+		case Entity::Type::Phone:
+			result.push_back(MTP_messageEntityPhone(offset, length));
+			break;
 		}
 	}
 	return MTP_vector<MTPMessageEntity>(std::move(result));
@@ -312,17 +357,11 @@ template <typename Type>
 } // namespace
 
 struct Backend::Download {
-	QString name;
 	QByteArray bytes;
 	bool loaded = false;
 	bool loading = false;
 	crl::time lastUsed = 0;
-	struct Waiter {
-		mtpRequestId requestId = 0;
-		int64 offset = 0;
-		int limit = 0;
-	};
-	std::vector<Waiter> waiters;
+	std::vector<Fn<void(QByteArray)>> callbacks;
 };
 
 struct Backend::Upload {
@@ -800,8 +839,16 @@ void Backend::dispatch(
 			MTPNotificationSound(),
 			MTPNotificationSound()));
 
+	// Reactions.
+	case mtpc_messages_sendReaction: return sendReaction(requestId, reader);
+	case mtpc_messages_getMessagesReactions:
+		return getMessagesReactions(requestId, reader);
+	case mtpc_messages_getMessageReactionsList:
+		return getMessageReactionsList(requestId, reader);
+
 	// Files.
 	case mtpc_upload_getFile: return getFile(requestId, reader);
+	case mtpc_photos_getUserPhotos: return getUserPhotos(requestId, reader);
 	case mtpc_upload_saveFilePart:
 		return saveFilePart(requestId, reader, false);
 	case mtpc_upload_saveBigFilePart:
@@ -837,12 +884,13 @@ void Backend::dispatch(
 		return reply(requestId, MTP_help_timezonesListNotModified());
 	case mtpc_messages_getTopReactions:
 	case mtpc_messages_getRecentReactions:
+		return reply(requestId, reactionsList());
 	case mtpc_messages_getDefaultTagReactions:
 		return reply(requestId, MTP_messages_reactionsNotModified());
 	case mtpc_messages_getAvailableReactions:
-		return reply(
-			requestId,
-			MTP_messages_availableReactionsNotModified());
+		return reply(requestId, availableReactions());
+	case mtpc_messages_clearRecentReactions:
+		return replyTrue(requestId);
 	case mtpc_messages_getAvailableEffects:
 		return reply(requestId, MTP_messages_availableEffectsNotModified());
 	case mtpc_account_getDefaultEmojiStatuses:
@@ -911,10 +959,6 @@ void Backend::dispatch(
 	case mtpc_account_getWebAuthorizations:
 		return reply(requestId, MTP_account_webAuthorizations(
 			MTP_vector<MTPWebAuthorization>(),
-			MTP_vector<MTPUser>()));
-	case mtpc_photos_getUserPhotos:
-		return reply(requestId, MTP_photos_photos(
-			MTP_vector<MTPPhoto>(),
 			MTP_vector<MTPUser>()));
 	}
 
@@ -1003,6 +1047,20 @@ void Backend::replyAppConfig(mtpRequestId requestId) {
 	values.push_back(value(
 		u"stories_posting"_q,
 		MTP_jsonString(MTP_string("disabled"))));
+	// pararam.io allows one reaction per user from its own list.
+	const auto number = [](int value) {
+		return MTP_jsonNumber(MTP_double(value));
+	};
+	const auto count = int(ReactionKinds().size());
+	values.push_back(value(u"reactions_user_max_default"_q, number(1)));
+	values.push_back(value(u"reactions_user_max_premium"_q, number(1)));
+	values.push_back(value(u"reactions_uniq_max"_q, number(count)));
+	values.push_back(value(u"reactions_default"_q, MTP_jsonObject(
+		MTP_vector<MTPJSONObjectValue>({
+			value(u"_"_q, MTP_jsonString(MTP_string("reactionEmoji"))),
+			value(u"emoticon"_q, MTP_jsonString(MTP_string(
+				QString::fromUtf16(ReactionKinds().front().emoji)))),
+		}))));
 	reply(requestId, MTP_help_appConfig(
 		MTP_int(1),
 		MTP_jsonObject(MTP_vector<MTPJSONObjectValue>(std::move(values)))));
@@ -1484,7 +1542,7 @@ MTPUser Backend::userToMTP(int64 userId) const {
 			: user.uniqueName;
 	}
 	const auto self = (userId == _selfId);
-	auto flags = Flag::f_access_hash | Flag::f_status;
+	auto flags = Flag::f_access_hash | Flag::f_status | Flag::f_photo;
 	if (user.deleted) {
 		flags |= Flag::f_deleted;
 	} else {
@@ -1509,7 +1567,13 @@ MTPUser Backend::userToMTP(int64 userId) const {
 		MTPstring(), // last_name
 		MTP_string(user.uniqueName),
 		MTPstring(), // phone
-		MTPUserProfilePhoto(),
+		(user.deleted
+			? MTP_userProfilePhotoEmpty()
+			: MTP_userProfilePhoto(
+				MTP_flags(0),
+				MTP_long(userAvatarId(userId)),
+				MTPbytes(),
+				MTP_int(kDcId))),
 		(self
 			? MTP_userStatusOnline(MTP_int(Now() + 300))
 			: MTP_userStatusRecently(MTP_flags(0))),
@@ -1565,7 +1629,11 @@ MTPChat Backend::chatToMTP(const Chat &chat) const {
 		MTP_long(AccessHash(chat.info.id)),
 		MTP_string(title),
 		MTPstring(), // username
-		MTP_chatPhotoEmpty(),
+		MTP_chatPhoto(
+			MTP_flags(0),
+			MTP_long(chatAvatarId(chat)),
+			MTPbytes(),
+			MTP_int(kDcId)),
 		MTP_int(chat.info.created ? chat.info.created : Now()),
 		MTPVector<MTPRestrictionReason>(),
 		(admin ? AdminRights() : MTPChatAdminRights()),
@@ -1604,6 +1672,24 @@ MTPMessageMedia Backend::mediaToMTP(const FileInfo &original) {
 	const auto date = MTP_int(Now());
 	const auto reference = MTP_bytes(file.guid.toUtf8());
 	if (file.isImage() && file.width > 0 && file.height > 0) {
+		// "m" is the preview resized by the file server, "y" the file.
+		const auto preview = FitPreview(QSize(file.width, file.height));
+		auto sizes = QVector<MTPPhotoSize>();
+		sizes.push_back(MTP_photoSize(
+			MTP_string("m"),
+			MTP_int(preview.width()),
+			MTP_int(preview.height()),
+			MTP_int(0)));
+		// The loader needs exact byte sizes, the converted one is unknown.
+		sizes.push_back(MTP_photoSize(
+			MTP_string("y"),
+			MTP_int(file.width),
+			MTP_int(file.height),
+			MTP_int(file.needsConversion()
+				? 0
+				: int(std::min(
+					file.size,
+					int64(std::numeric_limits<int>::max()))))));
 		return MTP_messageMediaPhoto(
 			MTP_flags(MTPDmessageMediaPhoto::Flag::f_photo),
 			MTP_photo(
@@ -1612,13 +1698,7 @@ MTPMessageMedia Backend::mediaToMTP(const FileInfo &original) {
 				MTP_long(AccessHash(id)),
 				reference,
 				date,
-				MTP_vector<MTPPhotoSize>(1, MTP_photoSize(
-					MTP_string("y"),
-					MTP_int(file.width),
-					MTP_int(file.height),
-					MTP_int(int(std::min(
-						file.size,
-						int64(std::numeric_limits<int>::max())))))),
+				MTP_vector<MTPPhotoSize>(std::move(sizes)),
 				MTPVector<MTPVideoSize>(),
 				MTP_int(kDcId)),
 			MTPint(),
@@ -1732,6 +1812,9 @@ MTPMessage Backend::messageToMTP(const Chat &chat, const PostInfo &post) {
 	if (post.edited && post.edited > post.created + 1) {
 		flags |= Flag::f_edit_date;
 	}
+	if (!post.reactions.list.empty()) {
+		flags |= Flag::f_reactions;
+	}
 	return MTP_message(
 		MTP_flags(flags),
 		id,
@@ -1756,7 +1839,9 @@ MTPMessage Backend::messageToMTP(const Chat &chat, const PostInfo &post) {
 		MTP_int(post.edited),
 		MTPstring(), // post_author
 		MTPlong(), // grouped_id
-		MTPMessageReactions(),
+		(post.reactions.list.empty()
+			? MTPMessageReactions()
+			: reactionsToMTP(post)),
 		MTPVector<MTPRestrictionReason>(),
 		MTPint(), // ttl_period
 		MTPint(), // quick_reply_shortcut_id
@@ -1876,6 +1961,15 @@ void Backend::collectPeers(
 	if (chat.pmUserId) {
 		users.push_back(chat.pmUserId);
 	}
+	auto reactors = 0;
+	for (const auto &[emoji, list] : post.reactions.list) {
+		for (const auto userId : list) {
+			if (++reactors > kMaxRecentReactions) {
+				return;
+			}
+			users.push_back(userId);
+		}
+	}
 }
 
 FormattedText Backend::textFromMTP(
@@ -1894,7 +1988,6 @@ void Backend::ensureImageSizes(std::vector<FileInfo> files, Done done) {
 		if (file.valid()
 			&& file.isImage()
 			&& (file.width <= 0 || file.height <= 0)
-			&& file.size <= kMaxProbedImageSize
 			&& !_imageSizes.contains(file.guid)
 			&& std::none_of(wanted.begin(), wanted.end(), [&](
 					const FileInfo &other) {
@@ -1932,6 +2025,13 @@ void Backend::ensureImageSizes(std::vector<FileInfo> files, Done done) {
 				waiter();
 			}
 		};
+		const auto byPreview = [=] {
+			probeImageByPreview(file, finish);
+		};
+		if (file.needsConversion() || file.size > kMaxProbedImageSize) {
+			byPreview();
+			continue;
+		}
 		_api.downloadHead(guid, file.name, kImageProbeBytes, [=](
 				const QByteArray &bytes) {
 			auto buffer = QBuffer();
@@ -1943,11 +2043,55 @@ void Backend::ensureImageSizes(std::vector<FileInfo> files, Done done) {
 				& QImageIOHandler::TransformationRotate90) {
 				size.transpose();
 			}
-			finish(size.isValid() ? size : QSize(-1, -1));
+			if (size.isValid() && !size.isEmpty()) {
+				finish(size);
+			} else {
+				// Large metadata before the image header, use the preview.
+				byPreview();
+			}
 		}, [=](const HttpError &) {
-			finish(QSize(-1, -1));
+			byPreview();
 		});
 	}
+}
+
+void Backend::probeImageByPreview(
+		const FileInfo &file,
+		Fn<void(QSize)> done) {
+	// The file server resizes images keeping the aspect ratio, the
+	// preview is needed for the "m" photo size anyway.
+	loadPath(FilePath(file, true), [=](const QByteArray &bytes) {
+		auto buffer = QBuffer();
+		buffer.setData(bytes);
+		buffer.open(QIODevice::ReadOnly);
+		auto reader = QImageReader(&buffer);
+		reader.setAutoTransform(true);
+		auto size = reader.size();
+		if (size.isValid() && reader.transformation()
+			& QImageIOHandler::TransformationRotate90) {
+			size.transpose();
+		}
+		done((size.isValid() && !size.isEmpty()) ? size : QSize(-1, -1));
+	});
+}
+
+QString Backend::FilePath(const FileInfo &file, bool preview) {
+	// Same as the web client: '/', '?' and '&' are replaced in the name.
+	auto name = file.name;
+	if (name.isEmpty() || name == u"."_q || name == u".."_q) {
+		name = u"file"_q;
+	}
+	name.replace(QRegularExpression(u"[/?&]"_q), u"-"_q);
+	auto result = u"/download/"_q
+		+ file.guid
+		+ '/'
+		+ QString::fromLatin1(QUrl::toPercentEncoding(name));
+	if (preview) {
+		result += u"?s=%1"_q.arg(kPreviewSide);
+	} else if (file.needsConversion()) {
+		result += u"?s=%1"_q.arg(kConvertedSide);
+	}
+	return result;
 }
 
 std::vector<FileInfo> Backend::filesOf(const PostInfo &post) const {
@@ -1965,6 +2109,213 @@ std::vector<FileInfo> Backend::filesOf(const PostInfo &post) const {
 		}
 	}
 	return result;
+}
+
+// Avatars.
+
+uint64 Backend::userAvatarId(int64 userId) const {
+	// The web client shows /avatar/user/<id> for every user, the
+	// server keeps a default picture for users without an avatar.
+	const auto i = _users.find(userId);
+	const auto stamp = (i != end(_users))
+		? (i->second.updated
+			? QString::number(i->second.updated)
+			: i->second.avatar)
+		: QString();
+	return HashId(u"user:%1:%2"_q.arg(userId).arg(stamp));
+}
+
+uint64 Backend::chatAvatarId(const Chat &chat) const {
+	// time_updated changes with every post, time_edited with the chat.
+	const auto stamp = chat.info.edited ? chat.info.edited : chat.info.created;
+	return HashId(u"chat:%1:%2"_q.arg(chat.info.id).arg(stamp));
+}
+
+QString Backend::userAvatarPath(int64 userId, bool big) const {
+	const auto i = _users.find(userId);
+	const auto stamp = (i != end(_users)) ? i->second.updated : TimeId();
+	return u"/avatar/user/%1/%2?x=%3"_q
+		.arg(userId)
+		.arg(big ? kAvatarLarge : kAvatarSmall)
+		.arg(qint64(stamp) * 1000);
+}
+
+QString Backend::chatAvatarPath(const Chat &chat, bool big) const {
+	const auto stamp = chat.info.edited ? chat.info.edited : chat.info.created;
+	return u"/avatar/chat/%1/%2?x=%3"_q
+		.arg(chat.info.id)
+		.arg(big ? kAvatarLarge : kAvatarSmall)
+		.arg(qint64(stamp) * 1000);
+}
+
+MTPPhoto Backend::avatarPhoto(uint64 photoId, const QString &key) {
+	_avatarPaths[photoId] = key;
+	auto sizes = QVector<MTPPhotoSize>();
+	sizes.push_back(MTP_photoSize(
+		MTP_string("a"),
+		MTP_int(kAvatarSmall),
+		MTP_int(kAvatarSmall),
+		MTP_int(0)));
+	sizes.push_back(MTP_photoSize(
+		MTP_string("c"),
+		MTP_int(kAvatarLarge),
+		MTP_int(kAvatarLarge),
+		MTP_int(0)));
+	return MTP_photo(
+		MTP_flags(0),
+		MTP_long(photoId),
+		MTP_long(AccessHash(int64(photoId))),
+		MTP_bytes(key.toUtf8()),
+		MTP_int(Now()),
+		MTP_vector<MTPPhotoSize>(std::move(sizes)),
+		MTPVector<MTPVideoSize>(),
+		MTP_int(kDcId));
+}
+
+// Reactions.
+
+MTPMessageReactions Backend::reactionsToMTP(const PostInfo &post) const {
+	using Flag = MTPDmessageReactions::Flag;
+	const auto mine = post.reactions.of(_selfId);
+	auto results = QVector<MTPReactionCount>();
+	auto recent = QVector<MTPMessagePeerReaction>();
+	for (const auto &[emoji, users] : post.reactions.list) {
+		using CountFlag = MTPDreactionCount::Flag;
+		const auto chosen = (emoji == mine);
+		results.push_back(MTP_reactionCount(
+			MTP_flags(chosen ? CountFlag::f_chosen_order : CountFlag()),
+			chosen ? MTP_int(0) : MTPint(),
+			ReactionToMTP(emoji),
+			MTP_int(int(users.size()))));
+		for (const auto userId : users) {
+			if (recent.size() >= kMaxRecentReactions) {
+				break;
+			}
+			using PeerFlag = MTPDmessagePeerReaction::Flag;
+			recent.push_back(MTP_messagePeerReaction(
+				MTP_flags((userId == _selfId)
+					? PeerFlag::f_my
+					: PeerFlag()),
+				MTP_peerUser(MTP_long(userId)),
+				MTP_int(post.created ? post.created : Now()),
+				ReactionToMTP(emoji)));
+		}
+	}
+	return MTP_messageReactions(
+		MTP_flags(Flag::f_can_see_list
+			| (recent.isEmpty() ? Flag() : Flag::f_recent_reactions)),
+		MTP_vector<MTPReactionCount>(std::move(results)),
+		MTP_vector<MTPMessagePeerReaction>(std::move(recent)),
+		MTPVector<MTPMessageReactor>());
+}
+
+MTPUpdate Backend::reactionsUpdate(
+		const Chat &chat,
+		const PostInfo &post) const {
+	return MTP_updateMessageReactions(
+		MTP_flags(0),
+		peerToMTP(chat),
+		MTP_int(msgId(chat, post.postNo)),
+		MTPint(), // top_msg_id
+		MTPPeer(), // saved_peer_id
+		reactionsToMTP(post));
+}
+
+MTPDocument Backend::reactionDocument(int index) {
+	const auto &kinds = ReactionKinds();
+	if (_generatedFiles.empty()) {
+		auto emoji = std::vector<QString>();
+		for (const auto &kind : kinds) {
+			emoji.push_back(QString::fromUtf16(kind.emoji));
+		}
+		const auto icons = RenderReactionIcons(emoji);
+		for (auto i = 0, count = int(icons.size()); i != count; ++i) {
+			_generatedFiles[kReactionDocumentBase + i] = icons[i];
+		}
+	}
+	const auto id = kReactionDocumentBase + index;
+	const auto &bytes = _generatedFiles[id];
+	auto attributes = QVector<MTPDocumentAttribute>();
+	attributes.push_back(MTP_documentAttributeImageSize(
+		MTP_int(kReactionIconSize),
+		MTP_int(kReactionIconSize)));
+	attributes.push_back(MTP_documentAttributeSticker(
+		MTP_flags(0),
+		MTP_string(QString::fromUtf16(kinds[index].emoji)),
+		MTP_inputStickerSetEmpty(),
+		MTPMaskCoords()));
+	attributes.push_back(MTP_documentAttributeFilename(
+		MTP_string(u"reaction.webp"_q)));
+	return MTP_document(
+		MTP_flags(0),
+		MTP_long(id),
+		MTP_long(AccessHash(int64(id))),
+		MTP_bytes(QByteArray::number(qulonglong(id))),
+		MTP_int(1),
+		MTP_string("image/webp"),
+		MTP_long(bytes.size()),
+		MTPVector<MTPPhotoSize>(),
+		MTPVector<MTPVideoSize>(),
+		MTP_int(kDcId),
+		MTP_vector<MTPDocumentAttribute>(std::move(attributes)));
+}
+
+MTPmessages_AvailableReactions Backend::availableReactions() {
+	const auto &kinds = ReactionKinds();
+	auto list = QVector<MTPAvailableReaction>();
+	for (auto i = 0, count = int(kinds.size()); i != count; ++i) {
+		const auto document = reactionDocument(i);
+		if (_generatedFiles[kReactionDocumentBase + i].isEmpty()) {
+			continue; // Emoji unknown to this emoji set.
+		}
+		list.push_back(MTP_availableReaction(
+			MTP_flags(0),
+			MTP_string(QString::fromUtf16(kinds[i].emoji)),
+			MTP_string(QString::fromUtf8(kinds[i].title)),
+			document, // static_icon
+			document, // appear_animation
+			document, // select_animation
+			document, // activate_animation
+			document, // effect_animation
+			MTPDocument(), // around_animation
+			MTPDocument())); // center_icon
+	}
+	return MTP_messages_availableReactions(
+		MTP_int(1),
+		MTP_vector<MTPAvailableReaction>(std::move(list)));
+}
+
+MTPmessages_Reactions Backend::reactionsList() const {
+	auto list = QVector<MTPReaction>();
+	for (const auto &kind : ReactionKinds()) {
+		list.push_back(ReactionToMTP(QString::fromUtf16(kind.emoji)));
+	}
+	return MTP_messages_reactions(
+		MTP_long(1),
+		MTP_vector<MTPReaction>(std::move(list)));
+}
+
+void Backend::collectChanges(
+		Chat &chat,
+		const base::flat_map<int, PostInfo> &old,
+		QVector<MTPUpdate> &updates,
+		std::vector<int64> &users,
+		bool allReactions) {
+	for (const auto &[no, post] : old) {
+		const auto i = chat.posts.find(no);
+		if (i == end(chat.posts) || i->second.deleted || post.deleted) {
+			continue;
+		}
+		const auto edited = !i->second.sameContent(post);
+		if (edited) {
+			updates.push_back(editMessageUpdate(chat, i->second, users));
+		}
+		if (allReactions
+			|| (!edited && !(i->second.reactions == post.reactions))) {
+			collectPeers(chat, i->second, users);
+			updates.push_back(reactionsUpdate(chat, i->second));
+		}
+	}
 }
 
 // Updates.
@@ -2408,7 +2759,7 @@ void Backend::deliverNewPosts(int64 chatId, int till) {
 		for (auto no = from; no <= till; ++no) {
 			const auto i = chat->posts.find(no);
 			if (i != end(chat->posts)) {
-				users.push_back(i->second.userId);
+				collectPeers(*chat, i->second, users);
 				const auto list = filesOf(i->second);
 				files.insert(files.end(), list.begin(), list.end());
 			}
@@ -2491,15 +2842,16 @@ void Backend::checkEdits(int64 chatId) {
 			}
 			if (i->second.deleted && !post.deleted) {
 				deleted.push_back(no);
-			} else if (!i->second.deleted && !i->second.sameContent(post)) {
-				updates.push_back(editMessageUpdate(*chat, i->second, users));
 			}
 		}
+		collectChanges(*chat, old, updates, users);
 		if (!deleted.empty()) {
 			updates.push_back(deleteMessagesUpdate(*chat, deleted));
 		}
 		if (!updates.isEmpty()) {
-			pushUpdates(wrapUpdates(updates, users, { chatId }));
+			ensureUsers(users, [=] {
+				pushUpdates(wrapUpdates(updates, users, { chatId }));
+			});
 		}
 	}, [=](const HttpError &) {
 		if (const auto chat = chatById(chatId)) {
@@ -2509,6 +2861,34 @@ void Backend::checkEdits(int64 chatId) {
 			}
 		}
 	});
+}
+
+void Backend::postEdited(int64 chatId, int postNo) {
+	const auto chat = chatById(chatId);
+	if (!chat || postNo <= 0 || !chat->posts.contains(postNo)) {
+		return;
+	}
+	auto old = base::flat_map<int, PostInfo>();
+	old.emplace(postNo, chat->posts[postNo]);
+	const auto finish = [=] {
+		const auto chat = chatById(chatId);
+		if (!chat) {
+			return;
+		}
+		auto updates = QVector<MTPUpdate>();
+		auto users = std::vector<int64>();
+		collectChanges(*chat, old, updates, users);
+		if (updates.isEmpty()) {
+			return;
+		}
+		const auto chats = chat->info.pm
+			? std::vector<int64>()
+			: std::vector{ chatId };
+		ensureUsers(users, [=] {
+			pushUpdates(wrapUpdates(updates, users, chats));
+		});
+	};
+	fetchPosts(chatId, postNo, postNo, finish, [](const HttpError &) {});
 }
 
 // Handlers.
@@ -4080,9 +4460,15 @@ void Backend::getFullUser(mtpRequestId requestId, Reader &reader) {
 		const auto calls = (userId != _selfId)
 			? (Flag::f_phone_calls_available | Flag::f_video_calls_available)
 			: Flag();
+		const auto deleted = (i != end(_users)) && i->second.deleted;
+		const auto photo = deleted
+			? MTPPhoto()
+			: avatarPhoto(userAvatarId(userId), u"user:%1"_q.arg(userId));
 		reply(requestId, MTP_users_userFull(
 			MTP_userFull(
-				MTP_flags((about.isEmpty() ? Flag() : Flag::f_about) | calls),
+				MTP_flags((about.isEmpty() ? Flag() : Flag::f_about)
+					| calls
+					| (deleted ? Flag() : Flag::f_profile_photo)),
 				MTP_long(userId),
 				MTP_string(about),
 				MTP_peerSettings(
@@ -4098,7 +4484,7 @@ void Backend::getFullUser(mtpRequestId requestId, Reader &reader) {
 					MTPint(),
 					MTPint()),
 				MTPPhoto(), // personal_photo
-				MTPPhoto(), // profile_photo
+				photo, // profile_photo
 				MTPPhoto(), // fallback_photo
 				(chat
 					? notifySettings(*chat)
@@ -4211,7 +4597,7 @@ void Backend::getFullChannel(mtpRequestId requestId, Reader &reader) {
 					: (top ? top->postNo : chat->info.lastReadPostNo)),
 				MTP_int(0), // read_outbox_max_id
 				MTP_int(unread),
-				MTP_photoEmpty(MTP_long(0)),
+				avatarPhoto(chatAvatarId(*chat), u"chat:%1"_q.arg(chatId)),
 				notifySettings(*chat),
 				MTPExportedChatInvite(),
 				MTP_vector<MTPBotInfo>(),
@@ -4235,8 +4621,8 @@ void Backend::getFullChannel(mtpRequestId requestId, Reader &reader) {
 				MTPint(), // requests_pending
 				MTPVector<MTPlong>(), // recent_requesters
 				MTPPeer(), // default_send_as
-				MTP_chatReactionsNone(),
-				MTPint(), // reactions_limit
+				MTP_chatReactionsAll(MTP_flags(0)),
+				MTPint(), // reactions_limit, distinct ones on a message
 				MTPPeerStories(),
 				MTPWallPaper(),
 				MTPint(), // boosts_applied
@@ -4773,6 +5159,202 @@ void Backend::messagesSearch(
 
 // Files.
 
+void Backend::getUserPhotos(mtpRequestId requestId, Reader &reader) {
+	const auto userId = userIdFromInputUser(reader.read<MTPInputUser>());
+	const auto offset = reader.int32Value();
+	auto photos = QVector<MTPPhoto>();
+	if (userId && offset <= 0) {
+		const auto i = _users.find(userId);
+		if (i == end(_users) || !i->second.deleted) {
+			photos.push_back(avatarPhoto(
+				userAvatarId(userId),
+				u"user:%1"_q.arg(userId)));
+		}
+	}
+	reply(requestId, MTP_photos_photos(
+		MTP_vector<MTPPhoto>(std::move(photos)),
+		usersToMTP({ userId })));
+}
+
+void Backend::sendReaction(mtpRequestId requestId, Reader &reader) {
+	const auto flags = reader.flags();
+	const auto peer = reader.read<MTPInputPeer>();
+	const auto id = reader.int32Value();
+	const auto list = (flags & (1U << 0))
+		? reader.read<MTPVector<MTPReaction>>()
+		: MTPVector<MTPReaction>();
+	if (!reader.ok()) {
+		replyError(requestId, 400, u"INPUT_REQUEST_INVALID"_q);
+		return;
+	}
+	auto wanted = QString();
+	for (const auto &reaction : list.v) {
+		reaction.match([&](const MTPDreactionEmoji &data) {
+			if (wanted.isEmpty()) {
+				wanted = qs(data.vemoticon());
+			}
+		}, [](const auto &) {
+		});
+	}
+	const auto chat = chatByInputPeer(peer);
+	const auto number = chat ? postNo(*chat, id) : 0;
+	if (!chat || !chat->posts.contains(number)) {
+		replyError(requestId, 400, u"MESSAGE_ID_INVALID"_q);
+		return;
+	} else if (!wanted.isEmpty() && ReactionIndex(wanted) < 0) {
+		replyError(requestId, 400, u"REACTION_INVALID"_q);
+		return;
+	}
+	const auto chatId = chat->info.id;
+	const auto replyCurrent = [=] {
+		const auto chat = chatById(chatId);
+		if (!chat || !chat->posts.contains(number)) {
+			replyError(requestId, 400, u"MESSAGE_ID_INVALID"_q);
+			return;
+		}
+		const auto &post = chat->posts[number];
+		auto users = std::vector<int64>();
+		collectPeers(*chat, post, users);
+		reply(requestId, wrapUpdates(
+			{ reactionsUpdate(*chat, post) },
+			users,
+			chat->info.pm ? std::vector<int64>() : std::vector{ chatId }));
+	};
+	const auto mine = chat->posts[number].reactions.of(_selfId);
+	if (wanted == mine) {
+		replyCurrent();
+		return;
+	}
+	// The server toggles: the same reaction again removes it.
+	auto body = QJsonObject();
+	body.insert(u"reaction"_q, wanted.isEmpty() ? mine : wanted);
+	_api.post(
+		u"/msg/post/%1/%2/reaction"_q.arg(chatId).arg(number),
+		body,
+		[=](const QJsonValue &result) {
+			if (const auto chat = chatById(chatId)) {
+				const auto i = chat->posts.find(number);
+				if (i != end(chat->posts)) {
+					const auto object = result.toObject();
+					const auto mine = object.contains(u"my_reaction"_q)
+						? JsonString(object, u"my_reaction"_q)
+						: wanted;
+					i->second.reactions.set(_selfId, mine);
+				}
+			}
+			replyCurrent();
+		},
+		failer(requestId));
+}
+
+void Backend::getMessagesReactions(mtpRequestId requestId, Reader &reader) {
+	const auto peer = reader.read<MTPInputPeer>();
+	const auto ids = reader.read<MTPVector<MTPint>>();
+	const auto chat = reader.ok() ? chatByInputPeer(peer) : nullptr;
+	if (!chat) {
+		reply(requestId, wrapUpdates({}, {}, {}));
+		return;
+	}
+	auto numbers = std::vector<int>();
+	for (const auto &id : ids.v) {
+		const auto number = postNo(*chat, id.v);
+		if (number > 0 && chat->posts.contains(number)) {
+			numbers.push_back(number);
+		}
+	}
+	if (numbers.empty()) {
+		reply(requestId, wrapUpdates({}, {}, {}));
+		return;
+	}
+	ranges::sort(numbers);
+	const auto till = numbers.back();
+	const auto from = std::max(numbers.front(), till - kEditCheckDepth * 4);
+	const auto chatId = chat->info.id;
+	// Older posts are not refreshed, their known state is replied.
+	auto old = base::flat_map<int, PostInfo>();
+	for (const auto number : numbers) {
+		old.emplace(number, chat->posts[number]);
+	}
+	const auto finish = [=] {
+		const auto chat = chatById(chatId);
+		if (!chat) {
+			reply(requestId, wrapUpdates({}, {}, {}));
+			return;
+		}
+		// The UI clears reactions of the messages missing in the reply.
+		auto updates = QVector<MTPUpdate>();
+		auto users = std::vector<int64>();
+		collectChanges(*chat, old, updates, users, true);
+		const auto chats = chat->info.pm
+			? std::vector<int64>()
+			: std::vector{ chatId };
+		ensureUsers(users, [=] {
+			reply(requestId, wrapUpdates(updates, users, chats));
+		});
+	};
+	fetchPosts(chatId, from, till, finish, [=](const HttpError &) {
+		finish();
+	});
+}
+
+void Backend::getMessageReactionsList(
+		mtpRequestId requestId,
+		Reader &reader) {
+	const auto flags = reader.flags();
+	const auto peer = reader.read<MTPInputPeer>();
+	const auto id = reader.int32Value();
+	const auto filter = (flags & (1U << 0))
+		? std::make_optional(reader.read<MTPReaction>())
+		: std::nullopt;
+	if (flags & (1U << 1)) {
+		[[maybe_unused]] const auto offset = reader.string();
+	}
+	[[maybe_unused]] const auto limit = reader.int32Value();
+	if (!reader.ok()) {
+		replyError(requestId, 400, u"INPUT_REQUEST_INVALID"_q);
+		return;
+	}
+	auto only = QString();
+	if (filter) {
+		filter->match([&](const MTPDreactionEmoji &data) {
+			only = qs(data.vemoticon());
+		}, [](const auto &) {
+		});
+	}
+	const auto chat = chatByInputPeer(peer);
+	const auto number = chat ? postNo(*chat, id) : 0;
+	if (!chat || !chat->posts.contains(number)) {
+		replyError(requestId, 400, u"MESSAGE_ID_INVALID"_q);
+		return;
+	}
+	const auto &post = chat->posts[number];
+	auto list = QVector<MTPMessagePeerReaction>();
+	auto users = std::vector<int64>();
+	for (const auto &[emoji, reacted] : post.reactions.list) {
+		if (!only.isEmpty() && emoji != only) {
+			continue;
+		}
+		for (const auto userId : reacted) {
+			using Flag = MTPDmessagePeerReaction::Flag;
+			list.push_back(MTP_messagePeerReaction(
+				MTP_flags((userId == _selfId) ? Flag::f_my : Flag()),
+				MTP_peerUser(MTP_long(userId)),
+				MTP_int(post.created ? post.created : Now()),
+				ReactionToMTP(emoji)));
+			users.push_back(userId);
+		}
+	}
+	ensureUsers(users, [=] {
+		reply(requestId, MTP_messages_messageReactionsList(
+			MTP_flags(0),
+			MTP_int(list.size()),
+			MTP_vector<MTPMessagePeerReaction>(list),
+			MTP_vector<MTPChat>(),
+			usersToMTP(users),
+			MTPstring()));
+	});
+}
+
 void Backend::getFile(mtpRequestId requestId, Reader &reader) {
 	[[maybe_unused]] const auto flags = reader.flags();
 	const auto location = reader.read<MTPInputFileLocation>();
@@ -4782,78 +5364,124 @@ void Backend::getFile(mtpRequestId requestId, Reader &reader) {
 		replyError(requestId, 400, u"INPUT_REQUEST_INVALID"_q);
 		return;
 	}
+	const auto avatar = [&](const QString &key, bool big) {
+		const auto colon = key.indexOf(':');
+		const auto id = key.mid(colon + 1).toLongLong();
+		if (key.startsWith(u"user:"_q)) {
+			return userAvatarPath(id, big);
+		} else if (const auto chat = chatById(id)) {
+			return chatAvatarPath(*chat, big);
+		}
+		return QString();
+	};
 	auto id = uint64();
+	auto thumb = QString();
+	auto path = QString();
 	location.match([&](const MTPDinputDocumentFileLocation &data) {
 		id = data.vid().v;
+		thumb = qs(data.vthumb_size());
 	}, [&](const MTPDinputPhotoFileLocation &data) {
 		id = data.vid().v;
+		thumb = qs(data.vthumb_size());
+		if (const auto i = _avatarPaths.find(id); i != end(_avatarPaths)) {
+			path = avatar(i->second, (thumb != u"a"_q));
+		}
+	}, [&](const MTPDinputPeerPhotoFileLocation &data) {
+		const auto big = data.is_big();
+		data.vpeer().match([&](const MTPDinputPeerChannel &data) {
+			path = avatar(
+				u"chat:%1"_q.arg(data.vchannel_id().v),
+				big);
+		}, [&](const MTPDinputPeerChannelFromMessage &data) {
+			path = avatar(
+				u"chat:%1"_q.arg(data.vchannel_id().v),
+				big);
+		}, [&](const auto &) {
+			if (const auto userId = userIdFromInputPeer(data.vpeer())) {
+				path = userAvatarPath(userId, big);
+			}
+		});
 	}, [](const auto &) {
 	});
+	if (!path.isEmpty()) {
+		servePath(requestId, path, offset, limit);
+		return;
+	}
+	if (const auto i = _generatedFiles.find(id); i != end(_generatedFiles)) {
+		const auto &bytes = i->second;
+		const auto from = std::clamp(offset, int64(0), int64(bytes.size()));
+		reply(requestId, MTP_upload_file(
+			MTP_storage_filePng(),
+			MTP_int(0),
+			MTP_bytes(bytes.mid(int(from), std::max(limit, 0)))));
+		return;
+	}
 	const auto i = _documents.find(id);
 	if (!id || i == end(_documents)) {
 		replyError(requestId, 400, u"LOCATION_INVALID"_q);
 		return;
 	}
-	serveFile(requestId, i->second, offset, limit);
+	const auto preview = (thumb == u"m"_q) && i->second.isImage();
+	servePath(requestId, FilePath(i->second, preview), offset, limit);
 }
 
-void Backend::serveFile(
+void Backend::loadPath(const QString &path, Fn<void(QByteArray)> done) {
+	auto &download = (*_downloads)[path];
+	download.lastUsed = crl::now();
+	if (download.loaded) {
+		done(download.bytes);
+		return;
+	}
+	download.callbacks.push_back(std::move(done));
+	if (download.loading) {
+		return;
+	}
+	download.loading = true;
+	const auto finish = [=](QByteArray bytes, bool loaded) {
+		const auto i = _downloads->find(path);
+		if (i == end(*_downloads)) {
+			return;
+		}
+		auto callbacks = base::take(i->second.callbacks);
+		if (loaded) {
+			auto &download = i->second;
+			download.loading = false;
+			download.loaded = true;
+			download.bytes = bytes;
+			_cachedBytes += bytes.size();
+		} else {
+			_downloads->erase(i);
+		}
+		for (const auto &callback : callbacks) {
+			callback(bytes);
+		}
+		if (loaded) {
+			trimDownloads(path);
+		}
+	};
+	_api.downloadPath(path, [=](const QByteArray &bytes) {
+		finish(bytes, true);
+	}, [=](const HttpError &error) {
+		LOG(("Pararam: could not load %1 (%2)").arg(path).arg(error.status));
+		finish(QByteArray(), false);
+	});
+}
+
+void Backend::servePath(
 		mtpRequestId requestId,
-		const FileInfo &file,
+		const QString &path,
 		int64 offset,
 		int limit) {
-	auto &download = (*_downloads)[file.guid];
-	download.lastUsed = crl::now();
-	const auto replySlice = [=](const QByteArray &bytes) {
+	loadPath(path, [=](const QByteArray &bytes) {
+		if (bytes.isEmpty()) {
+			replyError(requestId, 400, u"LOCATION_INVALID"_q);
+			return;
+		}
 		const auto from = std::clamp(offset, int64(0), int64(bytes.size()));
 		reply(requestId, MTP_upload_file(
 			MTP_storage_fileUnknown(),
 			MTP_int(0),
 			MTP_bytes(bytes.mid(int(from), std::max(limit, 0)))));
-	};
-	if (download.loaded) {
-		replySlice(download.bytes);
-		return;
-	}
-	download.waiters.push_back({ requestId, offset, limit });
-	if (download.loading) {
-		return;
-	}
-	download.loading = true;
-	download.name = file.name;
-	const auto guid = file.guid;
-	_api.download(guid, file.name, [=](const QByteArray &bytes) {
-		const auto i = _downloads->find(guid);
-		if (i == end(*_downloads)) {
-			return;
-		}
-		auto &download = i->second;
-		download.loading = false;
-		download.loaded = true;
-		download.bytes = bytes;
-		_cachedBytes += bytes.size();
-		auto waiters = base::take(download.waiters);
-		for (const auto &waiter : waiters) {
-			const auto from = std::clamp(
-				waiter.offset,
-				int64(0),
-				int64(bytes.size()));
-			reply(waiter.requestId, MTP_upload_file(
-				MTP_storage_fileUnknown(),
-				MTP_int(0),
-				MTP_bytes(bytes.mid(int(from), std::max(waiter.limit, 0)))));
-		}
-		trimDownloads(guid);
-	}, [=](const HttpError &error) {
-		const auto i = _downloads->find(guid);
-		if (i == end(*_downloads)) {
-			return;
-		}
-		auto waiters = base::take(i->second.waiters);
-		_downloads->erase(i);
-		for (const auto &waiter : waiters) {
-			replyHttpError(waiter.requestId, error);
-		}
 	});
 }
 

@@ -182,6 +182,33 @@ private:
 	[[nodiscard]] MTPInputPeer inputPeerToMTP(const Chat &chat) const;
 	[[nodiscard]] MTPMessageMedia mediaToMTP(const FileInfo &original);
 	void ensureImageSizes(std::vector<FileInfo> files, Done done);
+	void probeImageByPreview(const FileInfo &file, Fn<void(QSize)> done);
+	[[nodiscard]] static QString FilePath(
+		const FileInfo &file,
+		bool preview);
+
+	// Avatars.
+	[[nodiscard]] uint64 userAvatarId(int64 userId) const;
+	[[nodiscard]] uint64 chatAvatarId(const Chat &chat) const;
+	[[nodiscard]] QString userAvatarPath(int64 userId, bool big) const;
+	[[nodiscard]] QString chatAvatarPath(const Chat &chat, bool big) const;
+	[[nodiscard]] MTPPhoto avatarPhoto(uint64 photoId, const QString &key);
+
+	// Reactions.
+	[[nodiscard]] MTPMessageReactions reactionsToMTP(
+		const PostInfo &post) const;
+	[[nodiscard]] MTPUpdate reactionsUpdate(
+		const Chat &chat,
+		const PostInfo &post) const;
+	[[nodiscard]] MTPDocument reactionDocument(int index);
+	[[nodiscard]] MTPmessages_AvailableReactions availableReactions();
+	[[nodiscard]] MTPmessages_Reactions reactionsList() const;
+	void collectChanges(
+		Chat &chat,
+		const base::flat_map<int, PostInfo> &old,
+		QVector<MTPUpdate> &updates,
+		std::vector<int64> &users,
+		bool allReactions = false);
 	[[nodiscard]] std::vector<FileInfo> filesOf(const PostInfo &post) const;
 	[[nodiscard]] MTPMessage messageToMTP(
 		const Chat &chat,
@@ -246,6 +273,7 @@ private:
 	void refreshChat(int64 chatId, int postsCount, int lastRead);
 	void deliverNewPosts(int64 chatId, int till);
 	void checkEdits(int64 chatId);
+	void postEdited(int64 chatId, int postNo); // From the main socket.
 
 	// Handlers.
 	void updateNotifySettings(mtpRequestId requestId, Reader &reader);
@@ -286,6 +314,10 @@ private:
 	void resolveUsername(mtpRequestId requestId, Reader &reader);
 	void messagesSearch(mtpRequestId requestId, Reader &reader, bool global);
 	void getFile(mtpRequestId requestId, Reader &reader);
+	void getUserPhotos(mtpRequestId requestId, Reader &reader);
+	void sendReaction(mtpRequestId requestId, Reader &reader);
+	void getMessagesReactions(mtpRequestId requestId, Reader &reader);
+	void getMessageReactionsList(mtpRequestId requestId, Reader &reader);
 	void saveFilePart(mtpRequestId requestId, Reader &reader, bool big);
 
 	void createPost(
@@ -308,11 +340,12 @@ private:
 		uint64 randomId,
 		UpdatesDone done,
 		Fail fail);
-	void serveFile(
+	void servePath(
 		mtpRequestId requestId,
-		const FileInfo &file,
+		const QString &path,
 		int64 offset,
 		int limit);
+	void loadPath(const QString &path, Fn<void(QByteArray)> done);
 	void trimDownloads(const QString &keep);
 
 	const not_null<MTP::Instance*> _instance;
@@ -338,6 +371,8 @@ private:
 	base::flat_map<uint64, FileInfo> _documents;
 	base::flat_map<QString, uint64> _documentByGuid;
 	base::flat_map<QString, QSize> _imageSizes;
+	base::flat_map<uint64, QString> _avatarPaths; // Photo id -> avatar key.
+	base::flat_map<uint64, QByteArray> _generatedFiles;
 	base::flat_map<QString, std::vector<Done>> _imageProbeWaiters;
 
 	int32 _commonPts = 1;
