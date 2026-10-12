@@ -133,15 +133,51 @@ TimeId ParseTime(const QString &value) {
 	return TimeId(result.toSecsSinceEpoch());
 }
 
+QString UnescapeHtml(const QString &value) {
+	if (!value.contains('&')) {
+		return value;
+	}
+	static const auto entity = QRegularExpression(
+		u"&(amp|lt|gt|quot|apos|#x27|#39|#x2F|#47|#123|#125);"_q,
+		QRegularExpression::CaseInsensitiveOption);
+	auto result = QString();
+	result.reserve(value.size());
+	auto from = 0;
+	auto i = entity.globalMatch(value);
+	while (i.hasNext()) {
+		const auto match = i.next();
+		result.append(QStringView(value).mid(from, match.capturedStart() - from));
+		const auto name = match.captured(1).toLower();
+		result.append((name == u"amp"_q)
+			? QChar('&')
+			: (name == u"lt"_q)
+			? QChar('<')
+			: (name == u"gt"_q)
+			? QChar('>')
+			: (name == u"quot"_q)
+			? QChar('"')
+			: (name == u"#x2f"_q || name == u"#47"_q)
+			? QChar('/')
+			: (name == u"#123"_q)
+			? QChar('{')
+			: (name == u"#125"_q)
+			? QChar('}')
+			: QChar('\''));
+		from = match.capturedEnd();
+	}
+	result.append(QStringView(value).mid(from));
+	return result;
+}
+
 UserInfo UserInfo::Parse(const QJsonObject &object) {
 	auto result = UserInfo();
 	result.id = JsonInt(object, u"id"_q);
 	if (!result.id) {
 		result.id = JsonInt(object, u"user_id"_q);
 	}
-	result.name = JsonString(object, u"name"_q);
+	result.name = UnescapeHtml(JsonString(object, u"name"_q));
 	result.uniqueName = JsonString(object, u"unique_name"_q);
-	result.info = JsonString(object, u"info"_q);
+	result.info = UnescapeHtml(JsonString(object, u"info"_q));
 	result.avatar = JsonString(object, u"avatar"_q);
 	result.updated = ParseTime(JsonString(object, u"time_updated"_q));
 	result.bot = JsonBool(object, u"is_bot"_q);
@@ -177,9 +213,9 @@ void UserInfo::mergeFrom(const UserInfo &other) {
 FileInfo FileInfo::Parse(const QJsonObject &object) {
 	auto result = FileInfo();
 	result.guid = JsonString(object, u"guid"_q);
-	result.name = JsonString(object, u"name"_q);
+	result.name = UnescapeHtml(JsonString(object, u"name"_q));
 	if (result.name.isEmpty()) {
-		result.name = JsonString(object, u"filename"_q);
+		result.name = UnescapeHtml(JsonString(object, u"filename"_q));
 	}
 	result.mimeType = JsonString(object, u"mime_type"_q);
 	if (result.mimeType.isEmpty()) {
@@ -395,7 +431,7 @@ PostInfo PostInfo::Parse(const QJsonObject &object) {
 	result.postNo = int(JsonInt(object, u"post_no"_q));
 	result.userId = JsonInt(object, u"user_id"_q);
 	result.uuid = JsonString(object, u"uuid"_q);
-	result.text = JsonString(object, u"text"_q);
+	result.text = UnescapeHtml(JsonString(object, u"text"_q));
 	result.replyNo = int(JsonInt(object, u"reply_no"_q));
 	result.created = ParseTime(JsonString(object, u"time_created"_q));
 	result.edited = ParseTime(JsonString(object, u"time_edited"_q));
@@ -406,14 +442,15 @@ PostInfo PostInfo::Parse(const QJsonObject &object) {
 		const auto part = entry.toObject();
 		auto parsed = TextPart();
 		parsed.type = JsonString(part, u"type"_q);
-		parsed.value = JsonString(part, u"value"_q);
-		parsed.link = JsonString(part, u"link"_q);
+		parsed.value = UnescapeHtml(JsonString(part, u"value"_q));
+		parsed.link = UnescapeHtml(JsonString(part, u"link"_q));
 		if (parsed.link.isEmpty()) {
-			parsed.link = JsonString(part, u"url"_q);
+			parsed.link = UnescapeHtml(JsonString(part, u"url"_q));
 		}
-		parsed.title = JsonString(part, u"title"_q);
-		parsed.text = JsonString(part, u"text"_q);
-		parsed.description = JsonString(part, u"description"_q);
+		parsed.title = UnescapeHtml(JsonString(part, u"title"_q));
+		parsed.text = UnescapeHtml(JsonString(part, u"text"_q));
+		parsed.description = UnescapeHtml(
+			JsonString(part, u"description"_q));
 		parsed.lang = JsonString(part, u"lang"_q);
 		parsed.userId = JsonInt(part, u"id"_q);
 		result.parsed.push_back(parsed);
@@ -459,9 +496,9 @@ ChatInfo ChatInfo::Parse(const QJsonObject &object) {
 		result.id = JsonInt(object, u"chat_id"_q);
 	}
 	result.type = JsonString(object, u"type"_q);
-	result.title = JsonString(object, u"title"_q);
-	result.customTitle = JsonString(object, u"custom_title"_q);
-	result.description = JsonString(object, u"description"_q);
+	result.title = UnescapeHtml(JsonString(object, u"title"_q));
+	result.customTitle = UnescapeHtml(JsonString(object, u"custom_title"_q));
+	result.description = UnescapeHtml(JsonString(object, u"description"_q));
 	result.pm = (result.type == u"pm"_q)
 		|| (result.type.isEmpty() && JsonBool(object, u"pm"_q));
 	result.e2e = (result.type == u"e2e"_q) || JsonBool(object, u"e2e"_q);
@@ -484,9 +521,9 @@ ChatInfo ChatInfo::Parse(const QJsonObject &object) {
 	result.edited = ParseTime(JsonString(object, u"time_edited"_q));
 	result.authorId = JsonInt(object, u"author_id"_q);
 	result.lastMsgAuthorId = JsonInt(object, u"last_msg_author_id"_q);
-	result.lastMsg = JsonString(object, u"last_msg"_q);
+	result.lastMsg = UnescapeHtml(JsonString(object, u"last_msg"_q));
 	if (result.lastMsg.isEmpty()) {
-		result.lastMsg = JsonString(object, u"last_msg_text"_q);
+		result.lastMsg = UnescapeHtml(JsonString(object, u"last_msg_text"_q));
 	}
 	AppendIds(result.users, object.value(u"thread_users"_q));
 	AppendIds(result.users, object.value(u"thread_users_all"_q));

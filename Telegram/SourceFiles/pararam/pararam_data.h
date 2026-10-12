@@ -32,6 +32,10 @@ using TimeId = int32;
 [[nodiscard]] std::vector<int64> JsonIds(const QJsonValue &value);
 [[nodiscard]] TimeId ParseTime(const QString &value);
 
+// pararam.io keeps some text HTML-escaped, the web client unescapes it
+// once before showing (UtHtml.unescapeText).
+[[nodiscard]] QString UnescapeHtml(const QString &value);
+
 struct UserInfo {
 	int64 id = 0;
 	QString name;

@@ -22,6 +22,7 @@ introCoverIcon: icon {
 	{ "intro_plane_top", introCoverPlaneTop },
 };
 introCoverIconLeft: 50px;
+introCoverLogoSkip: 18px;
 introCoverIconTop: 46px;
 
 introSettingsSkip: 10px;

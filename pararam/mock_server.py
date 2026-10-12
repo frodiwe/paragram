@@ -131,7 +131,8 @@ def add_post(chat_id, user_id, text, reply_no=None, file=None,
 
 
 TOKENS = re.compile(
-    r'(\[(.+?)\]\((https?://[^\s)]+)\))'  # Markdown link.
+    r'```([\s\S]*?)```'  # Code block.
+    r'|(\[(.+?)\]\((https?://[^\s)]+)\))'  # Markdown link.
     r'|\*\*(.+?)\*\*'  # Bold.
     r'|~~(.+?)~~'  # Strike.
     r'|`([^`\n]+)`'  # Inline code.
@@ -145,9 +146,12 @@ def parse_text(text):
     # the values, markdown links keep the source in value.
     result = []
     for match in TOKENS.finditer(text or ''):
-        (markdown, title, href, bold, strike, code, url, mention,
+        (block, markdown, title, href, bold, strike, code, url, mention,
          rest) = match.groups()
-        if markdown:
+        if block is not None:
+            result.append({'type': 'blockquote1', 'value': block,
+                           'closed': True})
+        elif markdown:
             result.append({'type': 'link', 'value': markdown,
                            'link': href, 'title': title})
         elif bold:

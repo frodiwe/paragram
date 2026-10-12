@@ -138,6 +138,23 @@ int main(int argc, char *argv[]) {
 		CHECK(back.text == text.text);
 		CHECK(back.entities.size() == 1 && back.entities[0].offset == 2);
 	}
+	// HTML-escaped text from pararam.io is unescaped once, like the web.
+	CHECK(UnescapeHtml(u"&lt;br /&gt;\n&lt;b&gt;Warning&lt;/b&gt;: a &amp;&amp; b"_q)
+		== u"<br />\n<b>Warning</b>: a && b"_q);
+	CHECK(UnescapeHtml(u"&amp;lt; &#x27;q&#x27; &#x2F; &#123;&#125; &copy;"_q)
+		== u"&lt; 'q' / {} &copy;"_q);
+	{
+		const auto post = PostInfo::Parse(Json(R"({
+			"post_no": 7, "chat_id": 10, "user_id": 3,
+			"text": "```\n&lt;b&gt;Warning&lt;/b&gt;\n```",
+			"text_parsed": [{"type": "blockquote1",
+				"value": "\n&lt;b&gt;Warning&lt;/b&gt;\n"}]
+		})"));
+		const auto result = ParseIncomingText(post.text, post.parsed);
+		CHECK(result.text == u"<b>Warning</b>"_q);
+		CHECK(result.entities.size() == 1
+			&& result.entities[0].type == Entity::Type::Pre);
+	}
 	// Dates.
 	CHECK(ParseTime(u"1970-01-01T00:01:00.123456Z"_q) == 60);
 	CHECK(ParseTime(u"2024-01-01T00:00:00Z"_q) == 1704067200);
