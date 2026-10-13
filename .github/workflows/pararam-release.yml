@@ -1,0 +1,74 @@
+name: Pararam Desktop release
+
+# Started by hand from the Actions tab: builds Pararam Desktop for Windows
+# from the chosen branch and publishes it as a GitHub release.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version, like 1.0.0 (the tag is v1.0.0)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Mark as a pre-release'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+
+  check:
+    name: Check the version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Version format and a free tag.
+        env:
+          VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Version must look like 1.0.0, got '$VERSION'."
+            exit 1
+          fi
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "::error::Release v$VERSION exists already."
+            exit 1
+          fi
+
+  build:
+    name: Build
+    needs: check
+    uses: ./.github/workflows/pararam-windows.yml
+
+  release:
+    name: Publish
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # The build is skipped when the libraries had to be built first,
+      # then the artifact is missing: run the release again.
+      - name: Download the build.
+        uses: actions/download-artifact@v8
+        with:
+          name: Pararam Desktop x64
+          path: Pararam
+
+      - name: Publish the release.
+        env:
+          VERSION: ${{ inputs.version }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ZIP="Pararam-Desktop-$VERSION-win64.zip"
+          (cd Pararam && zip -9 -r "../$ZIP" .)
+          FLAGS=(--generate-notes)
+          if [ "$PRERELEASE" = "true" ]; then
+            FLAGS+=(--prerelease)
+          fi
+          gh release create "v$VERSION" "$ZIP" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Pararam Desktop $VERSION" \
+            "${FLAGS[@]}"

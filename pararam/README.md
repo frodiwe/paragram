@@ -71,6 +71,12 @@ repositories get faster (4-core) runners for free. The
 executable is portable and keeps its data in
 `%APPDATA%\Pararam Desktop`, separate from a Telegram Desktop install.
 
+Releases are published by hand: Actions → **Pararam Desktop release** →
+Run workflow, pick the branch and enter a version like `1.0.0`. It builds the
+app like above and publishes the `v1.0.0` release with
+`Pararam-Desktop-1.0.0-win64.zip`. It is the same Debug build as the
+artifacts, the libraries are only built in Debug.
+
 Pararam Desktop does not register `tg://` links and has the Telegram
 auto-updater disabled, so it does not interfere with Telegram Desktop.
 

@@ -7,6 +7,8 @@ on:
       - 'pararam/mock_server.py'
   pull_request:
   workflow_dispatch:
+  # Used by pararam-release.yml.
+  workflow_call:
 
 jobs:
 
