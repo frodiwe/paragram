@@ -53,6 +53,7 @@ constexpr auto kChannelDifferenceTimeout = 5;
 constexpr auto kArchiveFolderId = 1;
 constexpr auto kSearchLimit = 50;
 constexpr auto kFirstFilterId = 2;
+constexpr auto kFolderChatsLimit = 100000;
 constexpr auto kImageProbeBytes = 256 * 1024;
 constexpr auto kMaxProbedImageSize = int64(50 * 1024 * 1024);
 constexpr auto kPreviewSide = 400; // The ?s= preview of the file server.
@@ -541,6 +542,9 @@ void Backend::login(
 		_localMute.clear();
 		_tags.clear();
 		_tagById.clear();
+		_organizations.clear();
+		_organizationByFolder.clear();
+		_hiddenOrganizations.clear();
 		sessionChanged();
 		done(result, userToMTP(_selfId));
 	});
@@ -1071,6 +1075,15 @@ void Backend::replyAppConfig(mtpRequestId requestId) {
 	values.push_back(value(
 		u"chat_read_mark_size_threshold"_q,
 		number(kReadMarkSizeThreshold)));
+	// Chat folders hold whole pararam.io organizations and tags.
+	values.push_back(value(u"dialog_filters_limit_default"_q, number(500)));
+	values.push_back(value(u"dialog_filters_limit_premium"_q, number(500)));
+	values.push_back(value(
+		u"dialog_filters_chats_limit_default"_q,
+		number(kFolderChatsLimit)));
+	values.push_back(value(
+		u"dialog_filters_chats_limit_premium"_q,
+		number(kFolderChatsLimit)));
 	values.push_back(value(u"reactions_user_max_default"_q, number(1)));
 	values.push_back(value(u"reactions_user_max_premium"_q, number(1)));
 	values.push_back(value(u"reactions_uniq_max"_q, number(count)));
@@ -1530,6 +1543,7 @@ void Backend::withChatForPeer(
 						_chatByUser[userId] = chatId;
 					}
 				}
+				pushOrganizationFolders(chatId);
 				done(chatById(chatId));
 			}, fail);
 		},
@@ -2737,6 +2751,7 @@ void Backend::introduceChat(int64 chatId) {
 			{ chatId }));
 	}
 	deliverNewPosts(chatId, chat->info.postsCount);
+	pushOrganizationFolders(chatId);
 }
 
 void Backend::refreshChat(int64 chatId, int postsCount, int lastRead) {
@@ -3448,6 +3463,11 @@ void Backend::getDialogFilters(mtpRequestId requestId) {
 	const auto finish = [=] {
 		auto filters = QVector<MTPDialogFilter>();
 		filters.push_back(MTP_dialogFilterDefault());
+		for (const auto &[id, orgId] : _organizationByFolder) {
+			if (const auto org = organizationById(orgId)) {
+				filters.push_back(organizationFolderToMTP(id, *org));
+			}
+		}
 		for (const auto &[id, name] : _tagById) {
 			auto peers = QVector<MTPInputPeer>();
 			const auto i = _tags.find(name);
@@ -3475,47 +3495,180 @@ void Backend::getDialogFilters(mtpRequestId requestId) {
 			MTP_vector<MTPDialogFilter>(std::move(filters))));
 	};
 	ensureLoaded([=] {
-		// pararam.io chat tags are shown as chat folders.
-		_api.get(u"/user/chat/tags"_q, [=](const QJsonValue &result) {
-			_tags.clear();
-			const auto object = result.toObject();
-			const auto list = object.contains(u"chats_tags"_q)
-				? object.value(u"chats_tags"_q).toArray()
-				: result.toArray();
-			for (const auto &entry : list) {
-				const auto data = entry.toObject();
-				const auto name = JsonString(data, u"tag"_q);
-				if (!name.isEmpty()) {
-					_tags[name] = JsonIds(data.value(u"chat_ids"_q));
-				}
-			}
-			for (auto i = begin(_tagById); i != end(_tagById);) {
-				if (_tags.contains(i->second)) {
-					++i;
-				} else {
-					i = _tagById.erase(i);
-				}
-			}
-			for (const auto &[name, chats] : _tags) {
-				const auto known = ranges::any_of(_tagById, [&](
-						const auto &pair) {
-					return pair.second == name;
-				});
-				if (!known) {
-					auto id = kFirstFilterId;
-					while (_tagById.contains(id)) {
-						++id;
-					}
-					_tagById.emplace(id, name);
-				}
-			}
-			finish();
-		}, [=](const HttpError &) {
-			finish();
+		loadOrganizations([=] {
+			loadTags(finish);
 		});
 	}, [=](const HttpError &) {
 		finish();
 	});
+}
+
+void Backend::loadTags(Done done) {
+	// pararam.io chat tags are shown as chat folders.
+	_api.get(u"/user/chat/tags"_q, [=](const QJsonValue &result) {
+		_tags.clear();
+		const auto object = result.toObject();
+		const auto list = object.contains(u"chats_tags"_q)
+			? object.value(u"chats_tags"_q).toArray()
+			: result.toArray();
+		for (const auto &entry : list) {
+			const auto data = entry.toObject();
+			const auto name = JsonString(data, u"tag"_q);
+			if (!name.isEmpty()) {
+				_tags[name] = JsonIds(data.value(u"chat_ids"_q));
+			}
+		}
+		for (auto i = begin(_tagById); i != end(_tagById);) {
+			if (_tags.contains(i->second)) {
+				++i;
+			} else {
+				i = _tagById.erase(i);
+			}
+		}
+		for (const auto &[name, chats] : _tags) {
+			const auto known = ranges::any_of(_tagById, [&](
+					const auto &pair) {
+				return pair.second == name;
+			});
+			if (!known) {
+				_tagById.emplace(allocateFolderId(), name);
+			}
+		}
+		done();
+	}, [=](const HttpError &) {
+		done();
+	});
+}
+
+void Backend::loadOrganizations(Done done) {
+	// Each pararam.io organization gets its own chat folder, so that the
+	// chats of different organizations can be viewed separately.
+	const auto apply = [=](std::vector<OrganizationInfo> list) {
+		_organizations = std::move(list);
+		const auto folders = (_organizations.size() > 1);
+		for (auto i = begin(_organizationByFolder)
+			; i != end(_organizationByFolder);) {
+			if (folders
+				&& organizationById(i->second)
+				&& !_hiddenOrganizations.contains(i->second)) {
+				++i;
+			} else {
+				i = _organizationByFolder.erase(i);
+			}
+		}
+		if (folders) {
+			for (const auto &org : _organizations) {
+				const auto known = ranges::any_of(_organizationByFolder, [&](
+						const auto &pair) {
+					return pair.second == org.id;
+				});
+				if (!known && !_hiddenOrganizations.contains(org.id)) {
+					_organizationByFolder.emplace(allocateFolderId(), org.id);
+				}
+			}
+		}
+		done();
+	};
+	_api.get(u"/core/org/sync"_q, [=](const QJsonValue &result) {
+		auto ids = JsonIds(result.toObject().value(u"ids"_q));
+		if (ids.empty()) {
+			ids = JsonIds(result);
+		}
+		if (ids.empty()) {
+			apply({});
+			return;
+		}
+		_api.get(u"/core/org?ids="_q + JoinIds(ids), [=](
+				const QJsonValue &result) {
+			auto list = std::vector<OrganizationInfo>();
+			for (const auto &entry
+				: result.toObject().value(u"orgs"_q).toArray()) {
+				auto org = OrganizationInfo::Parse(entry.toObject());
+				if (org.id) {
+					list.push_back(std::move(org));
+				}
+			}
+			// Keep the order in which pararam.io lists them.
+			ranges::sort(list, std::less<>(), [&](
+					const OrganizationInfo &org) {
+				return ranges::find(ids, org.id) - begin(ids);
+			});
+			apply(std::move(list));
+		}, [=](const HttpError &) {
+			done();
+		});
+	}, [=](const HttpError &) {
+		done();
+	});
+}
+
+int Backend::allocateFolderId() const {
+	auto id = kFirstFilterId;
+	while (_tagById.contains(id) || _organizationByFolder.contains(id)) {
+		++id;
+	}
+	return id;
+}
+
+auto Backend::organizationById(int64 id) const -> const OrganizationInfo* {
+	const auto i = ranges::find(_organizations, id, &OrganizationInfo::id);
+	return (i != end(_organizations)) ? &*i : nullptr;
+}
+
+bool Backend::inOrganization(
+		const Chat &chat,
+		const OrganizationInfo &org) const {
+	if (!chat.joined || chat.info.e2e) {
+		return false;
+	} else if (chat.info.pm) {
+		// Private chats belong to every organization of the other user.
+		return chat.pmUserId
+			&& chat.pmUserId != _selfId
+			&& org.hasMember(chat.pmUserId);
+	}
+	return (chat.info.organizationId == org.id);
+}
+
+MTPDialogFilter Backend::organizationFolderToMTP(
+		int id,
+		const OrganizationInfo &org) const {
+	auto peers = QVector<MTPInputPeer>();
+	for (const auto &[chatId, chat] : _chats) {
+		if (inOrganization(*chat, org)) {
+			peers.push_back(inputPeerToMTP(*chat));
+		}
+	}
+	return MTP_dialogFilter(
+		MTP_flags(MTPDdialogFilter::Flag::f_emoticon),
+		MTP_int(id),
+		MTP_textWithEntities(
+			MTP_string(org.title),
+			MTP_vector<MTPMessageEntity>()),
+		MTP_string(u"\U0001F4BC"_q), // Briefcase: the "work" folder icon.
+		MTPint(), // color
+		MTP_vector<MTPInputPeer>(),
+		MTP_vector<MTPInputPeer>(std::move(peers)),
+		MTP_vector<MTPInputPeer>());
+}
+
+void Backend::pushOrganizationFolders(int64 chatId) {
+	const auto chat = chatById(chatId);
+	if (!chat) {
+		return;
+	}
+	auto updates = QVector<MTPUpdate>();
+	for (const auto &[id, orgId] : _organizationByFolder) {
+		const auto org = organizationById(orgId);
+		if (org && inOrganization(*chat, *org)) {
+			updates.push_back(MTP_updateDialogFilter(
+				MTP_flags(MTPDupdateDialogFilter::Flag::f_filter),
+				MTP_int(id),
+				organizationFolderToMTP(id, *org)));
+		}
+	}
+	if (!updates.empty()) {
+		pushUpdates(wrapUpdates(std::move(updates), {}, {}));
+	}
 }
 
 void Backend::updateDialogFilter(mtpRequestId requestId, Reader &reader) {
@@ -3526,6 +3679,24 @@ void Backend::updateDialogFilter(mtpRequestId requestId, Reader &reader) {
 		: std::nullopt;
 	if (!reader.ok()) {
 		replyError(requestId, 400, u"INPUT_REQUEST_INVALID"_q);
+		return;
+	}
+	if (const auto j = _organizationByFolder.find(id)
+		; j != end(_organizationByFolder)) {
+		// Organization folders follow pararam.io: they can be removed
+		// from the folder list, but not edited.
+		const auto orgId = j->second;
+		if (!filter) {
+			_hiddenOrganizations.emplace(orgId);
+			_organizationByFolder.erase(j);
+		}
+		replyTrue(requestId);
+		if (const auto org = filter ? organizationById(orgId) : nullptr) {
+			pushUpdates(wrapUpdates({ MTP_updateDialogFilter(
+				MTP_flags(MTPDupdateDialogFilter::Flag::f_filter),
+				MTP_int(id),
+				organizationFolderToMTP(id, *org)) }, {}, {}));
+		}
 		return;
 	}
 	const auto i = _tagById.find(id);

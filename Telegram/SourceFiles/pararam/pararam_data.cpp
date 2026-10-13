@@ -489,6 +489,31 @@ bool PostInfo::sameContent(const PostInfo &other) const {
 		&& (replyNo == other.replyNo);
 }
 
+OrganizationInfo OrganizationInfo::Parse(const QJsonObject &object) {
+	auto result = OrganizationInfo();
+	result.id = JsonInt(object, u"id"_q);
+	if (!result.id) {
+		result.id = JsonInt(object, u"org_id"_q);
+	}
+	result.slug = JsonString(object, u"slug"_q);
+	result.title = UnescapeHtml(JsonString(object, u"title"_q));
+	if (result.title.isEmpty()) {
+		result.title = result.slug;
+	}
+	result.members = JsonIds(object.value(u"users"_q));
+	const auto guests = JsonIds(object.value(u"guests"_q));
+	result.members.insert(result.members.end(), guests.begin(), guests.end());
+	std::sort(result.members.begin(), result.members.end());
+	result.members.erase(
+		std::unique(result.members.begin(), result.members.end()),
+		result.members.end());
+	return result;
+}
+
+bool OrganizationInfo::hasMember(int64 userId) const {
+	return std::binary_search(members.begin(), members.end(), userId);
+}
+
 ChatInfo ChatInfo::Parse(const QJsonObject &object) {
 	auto result = ChatInfo();
 	result.id = JsonInt(object, u"id"_q);

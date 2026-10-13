@@ -299,6 +299,17 @@ private:
 	void editPeerFolders(mtpRequestId requestId, Reader &reader);
 	void getDialogFilters(mtpRequestId requestId);
 	void updateDialogFilter(mtpRequestId requestId, Reader &reader);
+	void loadTags(Done done);
+	void loadOrganizations(Done done);
+	[[nodiscard]] int allocateFolderId() const;
+	[[nodiscard]] const OrganizationInfo *organizationById(int64 id) const;
+	[[nodiscard]] bool inOrganization(
+		const Chat &chat,
+		const OrganizationInfo &org) const;
+	[[nodiscard]] MTPDialogFilter organizationFolderToMTP(
+		int id,
+		const OrganizationInfo &org) const;
+	void pushOrganizationFolders(int64 chatId);
 	void getHistory(mtpRequestId requestId, Reader &reader);
 	void loadHistory(
 		mtpRequestId requestId,
@@ -381,6 +392,9 @@ private:
 	base::flat_map<int64, bool> _localMute;
 	base::flat_map<QString, std::vector<int64>> _tags;
 	base::flat_map<int, QString> _tagById;
+	std::vector<OrganizationInfo> _organizations;
+	base::flat_map<int, int64> _organizationByFolder;
+	base::flat_set<int64> _hiddenOrganizations;
 	base::flat_map<int, int64> _chatBySlot;
 	base::flat_map<uint64, FileInfo> _documents;
 	base::flat_map<QString, uint64> _documentByGuid;

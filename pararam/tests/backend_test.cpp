@@ -391,11 +391,27 @@ int main(int argc, char *argv[]) {
 		"messages.getDialogFilters");
 	if (filters) {
 		const auto &list = filters->c_messages_dialogFilters().vfilters().v;
-		CHECK(list.size() == 2);
-		if (list.size() == 2) {
-			const auto &filter = list[1].c_dialogFilter();
-			CHECK(qs(filter.vtitle().c_textWithEntities().vtext()) == u"Work"_q);
-			CHECK(filter.vinclude_peers().v.size() == 2);
+		// All chats, two organizations, then the "Work" tag.
+		CHECK(list.size() == 4);
+		if (list.size() == 4) {
+			const auto title = [&](int index) {
+				return qs(list[index].c_dialogFilter().vtitle(
+					).c_textWithEntities().vtext());
+			};
+			const auto peers = [&](int index) {
+				return list[index].c_dialogFilter().vinclude_peers().v.size();
+			};
+			CHECK(list[1].c_dialogFilter().vid().v == 2);
+			CHECK(title(1) == u"Acme & Co"_q);
+			CHECK(qs(list[1].c_dialogFilter().vemoticon().value_or_empty())
+				== QString::fromUtf8("\xF0\x9F\x92\xBC"));
+			CHECK(peers(1) == 3); // General, Carol and Bob.
+			CHECK(list[2].c_dialogFilter().vid().v == 3);
+			CHECK(title(2) == u"Side Project"_q);
+			CHECK(peers(2) == 2); // Releases and Carol.
+			CHECK(list[3].c_dialogFilter().vid().v == 4);
+			CHECK(title(3) == u"Work"_q);
+			CHECK(peers(3) == 2);
 		}
 	}
 
@@ -1002,16 +1018,85 @@ int main(int argc, char *argv[]) {
 			MTP_int(1)))), "folders.editPeerFolders").has_value());
 	CHECK(Call<MTPBool>(MTPmessages_UpdateDialogFilter(
 		MTP_flags(MTPmessages_UpdateDialogFilter::Flag::f_filter),
-		MTP_int(2),
+		MTP_int(4),
 		MTP_dialogFilter(
 			MTP_flags(0),
-			MTP_int(2),
+			MTP_int(4),
 			MTP_textWithEntities(MTP_string("Work"), MTPVector<MTPMessageEntity>()),
 			MTPstring(),
 			MTPint(),
 			MTPVector<MTPInputPeer>(),
 			MTP_vector<MTPInputPeer>(1, Channel(10)),
 			MTPVector<MTPInputPeer>())), "messages.updateDialogFilter").has_value());
+
+	// Organization folders: edits are reverted, removal hides the folder.
+	const auto folderUpdate = [] {
+		for (const auto &buffer : Updates) {
+			auto updates = MTPUpdates();
+			auto from = buffer.constData();
+			if (!updates.read(from, from + buffer.size())) {
+				continue;
+			}
+			for (const auto &update : UpdatesOf<void>(updates)) {
+				if (update.type() == mtpc_updateDialogFilter) {
+					return std::make_optional(update);
+				}
+			}
+		}
+		return std::optional<MTPUpdate>();
+	};
+	Updates.clear();
+	CHECK(Call<MTPBool>(MTPmessages_UpdateDialogFilter(
+		MTP_flags(MTPmessages_UpdateDialogFilter::Flag::f_filter),
+		MTP_int(2),
+		MTP_dialogFilter(
+			MTP_flags(0),
+			MTP_int(2),
+			MTP_textWithEntities(MTP_string("Renamed"), MTPVector<MTPMessageEntity>()),
+			MTPstring(),
+			MTPint(),
+			MTPVector<MTPInputPeer>(),
+			MTP_vector<MTPInputPeer>(1, Channel(10)),
+			MTPVector<MTPInputPeer>())), "messages.updateDialogFilter (organization)").has_value());
+	Wait([&] { return folderUpdate().has_value(); }, 5000);
+	if (const auto update = folderUpdate()) {
+		const auto &data = update->c_updateDialogFilter();
+		const auto &filter = data.vfilter()->c_dialogFilter();
+		CHECK(data.vid().v == 2);
+		CHECK(qs(filter.vtitle().c_textWithEntities().vtext()) == u"Acme & Co"_q);
+		// General, Carol, Bob and the bot written to above.
+		CHECK(filter.vinclude_peers().v.size() == 4);
+	} else {
+		CHECK(false);
+	}
+
+	// A new chat of an organization joins its folder.
+	Updates.clear();
+	Mock(u"/_mock/new_chat"_q, R"({"chat_id": 30, "title": "Side chat", "users": [1, 3], "org": 200})");
+	Wait([&] { return folderUpdate().has_value(); }, 15000);
+	if (const auto update = folderUpdate()) {
+		const auto &data = update->c_updateDialogFilter();
+		CHECK(data.vid().v == 3);
+		CHECK(data.vfilter()->c_dialogFilter().vinclude_peers().v.size() == 3);
+		std::printf("ok   organization folder update\n");
+	} else {
+		CHECK(false);
+	}
+
+	CHECK(Call<MTPBool>(MTPmessages_UpdateDialogFilter(
+		MTP_flags(0),
+		MTP_int(3),
+		MTPDialogFilter()), "messages.updateDialogFilter (hide organization)").has_value());
+	if (const auto filters = Call<MTPmessages_DialogFilters>(
+			MTPmessages_GetDialogFilters(),
+			"messages.getDialogFilters (organization hidden)")) {
+		const auto &list = filters->c_messages_dialogFilters().vfilters().v;
+		CHECK(list.size() == 3);
+		CHECK(ranges::none_of(list, [](const MTPDialogFilter &filter) {
+			return (filter.type() == mtpc_dialogFilter)
+				&& (filter.c_dialogFilter().vid().v == 3);
+		}));
+	}
 
 	// Unknown requests fail gracefully.
 	{

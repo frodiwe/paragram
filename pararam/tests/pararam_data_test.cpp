@@ -161,6 +161,19 @@ int main(int argc, char *argv[]) {
 	CHECK(ParseTime(QString()) == 0);
 	// Parsing.
 	{
+		const auto org = OrganizationInfo::Parse(Json(R"({
+			"id": 100, "slug": "acme", "title": "Acme &amp; Co",
+			"users": [3, 1, 2], "guests": [7, 2], "admins": [1]
+		})"));
+		CHECK(org.id == 100 && org.title == u"Acme & Co"_q);
+		CHECK(org.members == (std::vector<int64>{ 1, 2, 3, 7 }));
+		CHECK(org.hasMember(7) && !org.hasMember(4));
+		const auto untitled = OrganizationInfo::Parse(Json(R"({
+			"org_id": 5, "slug": "side"
+		})"));
+		CHECK(untitled.id == 5 && untitled.title == u"side"_q);
+	}
+	{
 		const auto chat = ChatInfo::Parse(Json(R"({
 			"id": 10, "type": "group", "title": "General",
 			"posts_count": 125, "last_read_post_no": "100",

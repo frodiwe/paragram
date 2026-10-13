@@ -30,6 +30,7 @@ in-process by a translation layer that calls the pararam.io REST API.
 | Group chats                        | Groups (read-only chats: posting blocked for non-admins) |
 | Favorite chats                     | Pinned chats (pin / unpin syncs back)     |
 | Hidden chats                       | Archived chats (archive / unarchive syncs back) |
+| Organizations (when you are in more than one) | Chat folders with a briefcase icon: the organization's chats plus private chats with its members. They follow pararam.io, so edits are undone; removing one hides it until the next start |
 | Chat tags                          | Chat folders (editing folders edits tags) |
 | Pinned posts                       | Pinned messages bar                       |
 | Posts, replies                     | Messages, replies                         |

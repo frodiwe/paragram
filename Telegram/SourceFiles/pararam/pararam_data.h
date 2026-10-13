@@ -131,6 +131,17 @@ struct PostInfo {
 	[[nodiscard]] bool sameContent(const PostInfo &other) const;
 };
 
+// A pararam.io organization (team) the user is a member of.
+struct OrganizationInfo {
+	int64 id = 0;
+	QString title;
+	QString slug;
+	std::vector<int64> members; // Users and guests.
+
+	[[nodiscard]] static OrganizationInfo Parse(const QJsonObject &object);
+	[[nodiscard]] bool hasMember(int64 userId) const;
+};
+
 struct ChatInfo {
 	int64 id = 0;
 	QString type;

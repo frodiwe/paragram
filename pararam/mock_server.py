@@ -60,6 +60,13 @@ USERS = {
         'is_bot': True},
 }
 
+# Organizations: Bob works only for Acme, Carol for both.
+ORGS = {
+    100: {'id': 100, 'slug': 'acme', 'title': 'Acme &amp; Co',
+          'users': [1, 2, 3, 4], 'guests': []},
+    200: {'id': 200, 'slug': 'side', 'title': 'Side Project',
+          'users': [1], 'guests': [3]},
+}
 CHATS = {}
 POSTS = {}  # chat_id -> {post_no: post}
 READ = {}  # (chat_id, user_id) -> last read post_no
@@ -72,8 +79,10 @@ SESSIONS = {}  # session cookie -> user_id (or pending dict)
 XSRF = set()
 
 
-def add_chat(chat_id, title, users, pm=False, author=1, read_only=False):
+def add_chat(chat_id, title, users, pm=False, author=1, read_only=False,
+             org=None):
     CHATS[chat_id] = {
+        'organization_id': org,
         'id': chat_id,
         'type': 'pm' if pm else 'group',
         'title': title,
@@ -246,8 +255,8 @@ def reaction_state(post, user_id):
 
 
 def seed():
-    add_chat(10, 'General', [1, 2, 3, 4])
-    add_chat(11, 'Releases', [1, 3, 4], read_only=True, author=3)
+    add_chat(10, 'General', [1, 2, 3, 4], org=100)
+    add_chat(11, 'Releases', [1, 3, 4], read_only=True, author=3, org=200)
     add_chat(20, '', [1, 3], pm=True, author=3)
     add_chat(21, '', [1, 2], pm=True, author=2)
     add_post(10, 3, 'Welcome to the **General** chat!', minutes_ago=300)
@@ -452,6 +461,14 @@ class Handler(BaseHTTPRequestHandler):
                     item['pm_thread_id'] = pm
                     found.append(item)
             return self.send_json(200, {'flt': flt, 'users': found})
+        if path == '/core/org/sync' and method == 'GET':
+            return self.send_json(200, {'ids': [
+                oid for oid, org in ORGS.items()
+                if user_id in org['users'] + org['guests']]})
+        if path == '/core/org' and method == 'GET':
+            ids = [int(i) for i in query.get('ids', '').split(',') if i]
+            return self.send_json(200, {'orgs': [
+                ORGS[i] for i in ids if i in ORGS]})
         if path == '/core/chat/sync' and method == 'GET':
             return self.send_json(200, {'chats': visible_chats(user_id)})
         if path == '/core/chat/sync' and method == 'POST':
@@ -811,6 +828,11 @@ class Handler(BaseHTTPRequestHandler):
             no = int(body.get('post_no', len(POSTS[cid])))
             mark_read(cid, uid, no, notify=True)
             return self.send_json(200, {'last_read_post_no': no})
+        if path == '/_mock/new_chat':
+            add_chat(cid, body.get('title', 'New chat'),
+                     body.get('users', [1, 3]), org=body.get('org'))
+            add_post(cid, 3, body.get('text', 'First message'))
+            return self.send_json(200, {'chat_id': cid})
         if path == '/_mock/incoming':
             post = add_post(cid, int(body.get('user_id', 3)),
                             body.get('text', 'Incoming message'),
