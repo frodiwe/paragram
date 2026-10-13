@@ -3602,6 +3602,24 @@ void Backend::loadOrganizations(Done done) {
 	});
 }
 
+bool Backend::loadFolderLogo(int filterId, Fn<void(QByteArray)> done) {
+	const auto i = _organizationByFolder.find(filterId);
+	const auto org = (i != end(_organizationByFolder))
+		? organizationById(i->second)
+		: nullptr;
+	if (!org) {
+		return false;
+	}
+	// Same as the web client, the server has a default logo.
+	loadPath(
+		u"/avatar/org/%1/%2?x=%3"_q
+			.arg(org->id)
+			.arg(kAvatarSmall)
+			.arg(qint64(org->updated) * 1000),
+		std::move(done));
+	return true;
+}
+
 int Backend::allocateFolderId() const {
 	auto id = kFirstFilterId;
 	while (_tagById.contains(id) || _organizationByFolder.contains(id)) {

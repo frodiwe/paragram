@@ -413,6 +413,14 @@ int main(int argc, char *argv[]) {
 			CHECK(title(3) == u"Work"_q);
 			CHECK(peers(3) == 2);
 		}
+		// Organization folders show the logo of the organization.
+		auto logo = std::optional<QByteArray>();
+		CHECK(Backend->loadFolderLogo(2, [&](QByteArray bytes) {
+			logo = bytes;
+		}));
+		Wait([&] { return logo.has_value(); });
+		CHECK(logo && logo->startsWith("\x89PNG"));
+		CHECK(!Backend->loadFolderLogo(4, [](QByteArray) {}));
 	}
 
 	// History of a group: newest page, older page, around a message.

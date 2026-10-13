@@ -43,6 +43,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "settings/sections/settings_folders.h"
 #include "storage/storage_media_prepare.h"
 #include "api/api_chat_filters.h"
+#include "pararam/pararam_folder_logo.h"
 #include "apiwrap.h"
 #include "styles/style_widgets.h"
 #include "styles/style_window.h"
@@ -594,6 +595,9 @@ base::unique_qptr<Ui::SideBarButton> FiltersMenu::prepareButton(
 		? icon
 		: Ui::FilterIcon::All);
 	raw->setIconOverride(icons.normal, icons.active);
+	if (id > 0 && !locked && mode != Ui::ChatsFiltersTabsMode::TextOnly) {
+		Pararam::SetupFolderLogo(raw, &_session->session(), id, buttonStyle());
+	}
 	if (id >= 0) {
 		if (locked) {
 			// Surface a locked folder's premium-gated status and what pressing
@@ -621,6 +625,7 @@ base::unique_qptr<Ui::SideBarButton> FiltersMenu::prepareButton(
 				? "99+"
 				: QString::number(count);
 			raw->setBadge(string, includeMuted && (count == muted));
+			Pararam::SetFolderLogoBadge(raw, string);
 			if (!locked) {
 				raw->setAccessibleName(count
 					? tr::lng_filter_unread_chats(

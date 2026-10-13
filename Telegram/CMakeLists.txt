@@ -1669,6 +1669,8 @@ PRIVATE
     pararam/pararam_calls.h
     pararam/pararam_data.cpp
     pararam/pararam_data.h
+    pararam/pararam_folder_logo.cpp
+    pararam/pararam_folder_logo.h
     pararam/pararam_reaction_icons.cpp
     pararam/pararam_reaction_icons.h
     pararam/pararam_tl_reader.h

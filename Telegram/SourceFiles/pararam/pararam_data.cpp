@@ -500,6 +500,7 @@ OrganizationInfo OrganizationInfo::Parse(const QJsonObject &object) {
 	if (result.title.isEmpty()) {
 		result.title = result.slug;
 	}
+	result.updated = ParseTime(JsonString(object, u"time_updated"_q));
 	result.members = JsonIds(object.value(u"users"_q));
 	const auto guests = JsonIds(object.value(u"guests"_q));
 	result.members.insert(result.members.end(), guests.begin(), guests.end());

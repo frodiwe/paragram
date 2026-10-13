@@ -78,6 +78,7 @@ foldersUnmutedActive: icon {{ "folders/folders_unmuted", sideBarIconFgActive }};
 foldersChannels: icon {{ "folders/folders_channels", sideBarIconFg }};
 foldersChannelsActive: icon {{ "folders/folders_channels", sideBarIconFgActive }};
 foldersCustom: icon {{ "folders/folders_custom", sideBarIconFg }};
+foldersBlank: icon {{ "folders/folders_blank", sideBarIconFg }};
 foldersCustomActive: icon {{ "folders/folders_custom", sideBarIconFgActive }};
 foldersSetup: icon {{ "folders/folders_setup", sideBarIconFg }};
 foldersSetupActive: icon {{ "folders/folders_setup", sideBarIconFgActive }};

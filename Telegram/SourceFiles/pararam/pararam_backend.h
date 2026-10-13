@@ -75,6 +75,10 @@ public:
 		return _api;
 	}
 
+	// The logo of the organization shown by a chat folder, if it is one.
+	// The bytes are empty if it could not be loaded.
+	bool loadFolderLogo(int filterId, Fn<void(QByteArray)> done);
+
 	[[nodiscard]] static mtpBuffer ErrorBuffer(int code, const QString &type);
 
 private:

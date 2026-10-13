@@ -136,6 +136,7 @@ struct OrganizationInfo {
 	int64 id = 0;
 	QString title;
 	QString slug;
+	TimeId updated = 0;
 	std::vector<int64> members; // Users and guests.
 
 	[[nodiscard]] static OrganizationInfo Parse(const QJsonObject &object);

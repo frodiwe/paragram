@@ -758,12 +758,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def avatar(self, path):
         parts = path.split('/')
-        if len(parts) < 5 or parts[2] not in ('user', 'chat'):
+        if len(parts) < 5 or parts[2] not in ('user', 'chat', 'org'):
             return self.send_json(404, {'error': 'not_found'})
         side = min(int(parts[4]), 400) if parts[4].isdigit() else 100
         seed_id = int(parts[3]) if parts[3].isdigit() else 0
         color = ((seed_id * 70) % 200 + 30, (seed_id * 130) % 200 + 30,
                  (seed_id * 40) % 200 + 30)
+        if parts[2] == 'org':
+            color = {100: (240, 140, 20), 200: (40, 120, 230)}.get(
+                seed_id, color)
         self.send_bytes('image/png', make_png(side, side, color))
 
     # Calls.
