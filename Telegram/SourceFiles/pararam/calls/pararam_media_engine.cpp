@@ -378,18 +378,6 @@ void EngineInternal::start() {
 
 	_threads->getWorkerThread()->BlockingCall([&] {
 		_adm = createAdm();
-		if (_adm) {
-			if (!_descriptor.audioInputId.empty()) {
-				tgcalls::SetAudioInputDeviceById(
-					_adm.get(),
-					_descriptor.audioInputId);
-			}
-			if (!_descriptor.audioOutputId.empty()) {
-				tgcalls::SetAudioOutputDeviceById(
-					_adm.get(),
-					_descriptor.audioOutputId);
-			}
-		}
 	});
 
 	auto dependencies = webrtc::PeerConnectionFactoryDependencies();
@@ -421,6 +409,20 @@ void EngineInternal::start() {
 		}
 		return;
 	}
+
+	// Only now, like tgcalls: choosing the output device starts the
+	// playout, and the device refuses the audio callback of the factory
+	// while it plays, leaving the call without sound both ways.
+	_threads->getWorkerThread()->BlockingCall([&] {
+		if (_adm) {
+			tgcalls::SetAudioInputDeviceById(
+				_adm.get(),
+				_descriptor.audioInputId);
+			tgcalls::SetAudioOutputDeviceById(
+				_adm.get(),
+				_descriptor.audioOutputId);
+		}
+	});
 
 	auto options = cricket::AudioOptions();
 	options.echo_cancellation = true;
