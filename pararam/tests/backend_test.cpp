@@ -281,6 +281,17 @@ int main(int argc, char *argv[]) {
 		Wait([&] { return status.has_value(); });
 		CHECK(status == Pararam::LoginResult::Status::Success);
 		CHECK(self.type() == mtpc_user && self.c_user().vid().v == 2);
+
+		// Bob is only in Acme, it still has its folder.
+		if (const auto filters = Call<MTPmessages_DialogFilters>(
+				MTPmessages_GetDialogFilters(),
+				"messages.getDialogFilters (one organization)")) {
+			const auto &list = filters->c_messages_dialogFilters().vfilters().v;
+			CHECK(list.size() == 2);
+			CHECK(list.size() == 2
+				&& qs(list[1].c_dialogFilter().vtitle(
+					).c_textWithEntities().vtext()) == u"Acme & Co"_q);
+		}
 	}
 	{
 		auto status = std::optional<Pararam::LoginResult::Status>();

@@ -3545,7 +3545,9 @@ void Backend::loadOrganizations(Done done) {
 	// chats of different organizations can be viewed separately.
 	const auto apply = [=](std::vector<OrganizationInfo> list) {
 		_organizations = std::move(list);
-		const auto folders = (_organizations.size() > 1);
+		// Even a single organization gets a folder, like the list of
+		// organizations on the left of the web client.
+		const auto folders = !_organizations.empty();
 		for (auto i = begin(_organizationByFolder)
 			; i != end(_organizationByFolder);) {
 			if (folders
