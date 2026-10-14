@@ -149,6 +149,7 @@ void SetupFolderLogo(
 		return;
 	}
 	const auto weak = QPointer<Ui::SideBarButton>(button.get());
+	const auto style = &st; // Not a copy: the logo keeps a reference.
 	backend->loadFolderLogo(filterId, [=](QByteArray bytes) {
 		const auto strong = weak.data();
 		auto logo = QImage::fromData(bytes);
@@ -156,7 +157,7 @@ void SetupFolderLogo(
 			return; // Keeps the folder icon.
 		}
 		strong->setIconOverride(&st::foldersBlank, &st::foldersBlank);
-		new FolderLogo(strong, st, std::move(logo));
+		new FolderLogo(strong, *style, std::move(logo));
 	});
 }
 
