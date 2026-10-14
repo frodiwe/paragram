@@ -794,6 +794,8 @@ class Handler(BaseHTTPRequestHandler):
         uid = int(body.get('user_id', 0))
         if path == '/_mock/call_state':
             return self.send_json(200, mock_calls.state())
+        if path == '/_mock/call_rtp':
+            return self.send_json(200, mock_calls.rtp_stats())
         if path == '/_mock/call_config':
             return self.send_json(200, mock_calls.configure(body))
         chat = CHATS.get(cid)

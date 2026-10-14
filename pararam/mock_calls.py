@@ -13,9 +13,11 @@ port:
 * a media server: the room socket (/{room_id}/{user_id}?access_key=...)
   and its HTTP API (/session/*, /reject, /leave).
 
-The media server answers SDP offers with aiortc. The "choirmaster"
-connection sends a 440 Hz tone, the connection to a simulated participant
-sends a moving test picture. aiortc has no VP9, so start the client with
+The media server answers SDP offers with aiortc. Like the real one, the
+"choirmaster" connection of each member plays the mix of the other members'
+audio, plus a 440 Hz tone while simulated participants are in the room. The
+connection to a simulated participant sends a moving test picture. The level
+and the main frequency of the audio each member sends are in call_state. aiortc has no VP9, so start the client with
 PARARAM_CALL_ANY_CODEC=1 to get video, plus PARARAM_CALL_ALLOW_DIRECT=1 and
 PARARAM_MEDIA_INSECURE=1 (the mock has no TURN server and no TLS).
 
@@ -49,23 +51,37 @@ ON_CALL_FINISHED = None
 NAMES = {}
 
 
-class ToneTrack(MediaStreamTrack):
+RATE = 48000
+FRAME = 960  # 20 ms.
+MAX_BUFFERED = RATE // 2
+
+
+class MixTrack(MediaStreamTrack):
+    """The audio a member hears: the others and the simulated tone."""
     kind = 'audio'
 
-    def __init__(self):
+    def __init__(self, room, user_id):
         super().__init__()
+        self._room = room
+        self._user_id = user_id
         self._samples = 0
         self._start = None
 
     async def recv(self):
-        rate, count = 48000, 960
+        rate, count = RATE, FRAME
         if self._start is None:
             self._start = time.time()
         wait = self._start + self._samples / rate - time.time()
         if wait > 0:
             await asyncio.sleep(wait)
-        t = (numpy.arange(count) + self._samples) / rate
-        data = (numpy.sin(2 * numpy.pi * 440 * t) * 6000).astype(numpy.int16)
+        mix = numpy.zeros(count, dtype=numpy.float64)
+        if any(v['audio'] for v in self._room.virtual.values()):
+            t = (numpy.arange(count) + self._samples) / rate
+            mix += numpy.sin(2 * numpy.pi * 440 * t) * 6000
+        for user_id, member in list(self._room.members.items()):
+            if user_id != self._user_id and member.audio:
+                mix += member.take(count)
+        data = numpy.clip(mix, -32768, 32767).astype(numpy.int16)
         frame = av.AudioFrame.from_ndarray(
             data.reshape(1, -1), format='s16', layout='mono')
         frame.sample_rate = rate
@@ -106,6 +122,32 @@ class Member:
         self.received = {'audio': 0, 'video': 0}
         self.offers = 0
         self.qualities = {}
+        self.inbox = numpy.zeros(0, dtype=numpy.float64)  # For the mix.
+        self.recent = numpy.zeros(0, dtype=numpy.float64)  # Last second.
+
+    def put(self, samples):
+        self.inbox = numpy.concatenate([self.inbox, samples])[-MAX_BUFFERED:]
+        self.recent = numpy.concatenate([self.recent, samples])[-RATE:]
+
+    def take(self, count):
+        result = self.inbox[:count]
+        self.inbox = self.inbox[count:]
+        if len(result) < count:
+            result = numpy.concatenate(
+                [result, numpy.zeros(count - len(result))])
+        return result
+
+    def level(self):
+        """RMS and main frequency of the last second this member sent."""
+        if len(self.recent) < RATE // 4:
+            return {'rms': 0, 'frequency': 0}
+        samples = self.recent
+        rms = float(numpy.sqrt(numpy.mean(samples ** 2)))
+        spectrum = numpy.abs(numpy.fft.rfft(samples * numpy.hanning(
+            len(samples))))
+        spectrum[0] = 0
+        frequency = float(numpy.argmax(spectrum) * RATE / len(samples))
+        return {'rms': round(rms), 'frequency': round(frequency)}
 
 
 class Room:
@@ -299,12 +341,35 @@ def state():
                         'video_source': m.video_source,
                         'offers': m.offers,
                         'received': m.received,
+                        'sent_audio': m.level(),
                         'connections': {
                             str(dst): pc.connectionState
                             for dst, pc in m.pcs.items()},
                         'qualities': m.qualities,
                     } for uid, m in room.members.items()},
             } for chat_id, room in ROOMS.items()}
+
+
+def rtp_stats():
+    """RTP packets each connection got and sent, from aiortc stats."""
+    async def collect():
+        result = {}
+        for chat_id, room in list(ROOMS.items()):
+            for uid, member in list(room.members.items()):
+                for dst, pc in list(member.pcs.items()):
+                    stats = await pc.getStats()
+                    entry = {}
+                    for value in stats.values():
+                        kind = getattr(value, 'kind', None)
+                        if value.type == 'inbound-rtp':
+                            entry['in_' + kind] = value.packetsReceived
+                        elif value.type == 'outbound-rtp':
+                            entry['out_' + kind] = value.packetsSent
+                    result['%s:%s->%s' % (chat_id, uid, dst)] = entry
+        return result
+    if LOOP is None:
+        return {}
+    return asyncio.run_coroutine_threadsafe(collect(), LOOP).result(5)
 
 
 def configure(values):
@@ -438,8 +503,20 @@ def _member_by_auth(auth):
 async def _consume(member, track):
     try:
         while True:
-            await track.recv()
+            frame = await track.recv()
             member.received[track.kind] += 1
+            if track.kind != 'audio':
+                continue
+            channels = len(frame.layout.channels)
+            data = frame.to_ndarray().astype(numpy.float64)
+            samples = (data.mean(axis=0) if frame.format.is_planar
+                       else data.reshape(-1, channels).mean(axis=1))
+            if frame.sample_rate != RATE:
+                samples = numpy.interp(
+                    numpy.arange(0, len(samples),
+                                 frame.sample_rate / RATE),
+                    numpy.arange(len(samples)), samples)
+            member.put(samples)
     except Exception:  # noqa: BLE001 - the track ended.
         pass
 
@@ -486,7 +563,7 @@ async def _sdp_offer(room, member, body):
     await pc.setRemoteDescription(RTCSessionDescription(
         sdp=offer.get('sdp', ''), type='offer'))
     if dst == CHOIRMASTER:
-        pc.addTrack(ToneTrack())
+        pc.addTrack(MixTrack(room, member.user_id))
     elif dst in room.virtual and room.virtual[dst]['video']:
         pc.addTrack(PictureTrack(dst))
     answer = await pc.createAnswer()

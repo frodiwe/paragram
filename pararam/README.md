@@ -120,7 +120,8 @@ self-hosted pararam.io installation.
 
 With `pip install aiohttp aiortc numpy` the mock also runs a media server
 (port 8766): calls get answered by simulated users that send a test tone and
-a moving test picture. Start the client with:
+a moving test picture. Like the real one it mixes the audio of the room, so
+two clients connected to the mock hear each other. Start the client with:
 
 ```
 set PARARAM_SOCK_URL=ws://127.0.0.1:8766
@@ -147,6 +148,12 @@ curl -X POST http://127.0.0.1:8765/_mock/call_state -d "{}"
   that drives `Pararam::Backend` with requests serialized by the generated
   TL classes and parses the responses back, against the mock server (Linux,
   needs a configured CMake build of the project).
+* `pararam/tests/call_audio_test.sh <Telegram binary> [qt lib dir]`: end
+  to end test of call audio. Two clients call each other through the mock on
+  a virtual display (Xvfb, xdotool), each with its own PulseAudio server
+  whose microphone plays a tone (440 Hz and 660 Hz). It checks that the media
+  server gets each tone and that each speaker plays the other one. Set
+  `PYTHON` to the Python that has the mock call dependencies.
 
 ## How it works
 
